@@ -3,19 +3,15 @@ tests/test_layout.py — Unit tests for the zone-based layout engine.
 Pure functions; no mocking needed.
 """
 
-import math
 
-import pytest
 
 from src.layout import (
-    TileGeometry,
     _best_grid,
     _fit_in_cell,
     _tile_zone,
     compute_layout,
     group_by_class,
 )
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -146,8 +142,8 @@ class TestComputeLayout:
         for t in tiles:
             assert t.x >= 40, f"x={t.x:.0f} too small"
             assert t.y >= 40, f"y={t.y:.0f} too small"
-            assert t.x + t.w <= self.W - 40 + 1, f"right edge out of bounds"
-            assert t.y + t.h <= self.H - 40 + 1, f"bottom edge out of bounds"
+            assert t.x + t.w <= self.W - 40 + 1, "right edge out of bounds"
+            assert t.y + t.h <= self.H - 40 + 1, "bottom edge out of bounds"
 
     def test_zones_are_horizontally_separated(self):
         """Windows of different apps must not share the same x-range."""
