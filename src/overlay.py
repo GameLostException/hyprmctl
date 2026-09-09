@@ -70,8 +70,8 @@ _BASE_CSS = """
 }
 """
 
-# Vertical offset for group label above the first tile in a group
-_GROUP_LABEL_H = 22
+# Vertical offset for group label below the hero tile
+_GROUP_LABEL_OFFSET = 6
 
 
 class MissionControlOverlay(Gtk.ApplicationWindow):
@@ -160,27 +160,35 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self._place_tiles(tiles)
 
     def _place_tiles(self, tiles) -> None:
-        seen_classes: set[str] = set()
+        # Group tiles by app class to find the hero (last = on top) per group
+        from collections import defaultdict
+        by_class: dict = defaultdict(list)
+        for tile_geo in tiles:
+            cls = tile_geo.client.get("class") or "unknown"
+            by_class[cls].append(tile_geo)
 
-        for i, tile_geo in enumerate(tiles):
-            app_class = tile_geo.client.get("class") or "unknown"
+        # Track heroes for label placement
+        heroes: dict = {}  # class -> last TileGeometry in group (hero)
+        for cls, group_tiles in by_class.items():
+            heroes[cls] = group_tiles[-1]
 
-            if app_class not in seen_classes:
-                seen_classes.add(app_class)
-                label = Gtk.Label(label=app_class.upper())
-                label.add_css_class("group-label")
-                label.set_halign(Gtk.Align.START)
-                self._fixed.put(label, tile_geo.x + 4, tile_geo.y - _GROUP_LABEL_H)
-
+        # Place all tiles (insertion order = z-order; hero is last in group = on top)
+        for tile_geo in tiles:
             widget = TileWidget(tile_geo.client, on_click=self._on_tile_click)
             widget.set_size_request(int(tile_geo.w), int(tile_geo.h))
             widget.add_css_class("tile-animate")
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
 
-            # Staggered fade-in: schedule .tile-animate-in for each tile
-            delay = 30 + i * 18  # ms — 30ms base + 18ms per tile
+            delay = 20 + len(self._tiles) * 15
             GLib.timeout_add(delay, self._animate_in, widget)
+
+        # Place group label below each hero tile
+        for cls, hero in heroes.items():
+            label = Gtk.Label(label=cls.upper())
+            label.add_css_class("group-label")
+            label.set_halign(Gtk.Align.CENTER)
+            self._fixed.put(label, hero.x, hero.y + hero.h + 6)
 
     @staticmethod
     def _animate_in(widget: Gtk.Widget) -> bool:
