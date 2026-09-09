@@ -4,28 +4,17 @@ tests/test_thumbnails.py — Unit tests for src/thumbnails.py (ThumbnailCache).
 
 from unittest.mock import MagicMock, patch
 
-from src.thumbnails import ThumbnailCache, _capture_now, _tmp_path
+from src.thumbnails import ThumbnailCache, _capture_now
 
 
 def make_client(addr="0xabc", x=0, y=0, w=800, h=600):
     return {"address": addr, "at": [x, y], "size": [w, h], "class": "app"}
 
 
-class TestTmpPath:
-    def test_no_0x_prefix(self):
-        assert "0x" not in _tmp_path("0xdeadbeef")
-
-    def test_contains_address(self):
-        assert "deadbeef" in _tmp_path("0xdeadbeef")
-
-    def test_is_png(self):
-        assert _tmp_path("0x1").endswith(".png")
-
-
 class TestCaptureNow:
     def test_returns_none_on_grim_failure(self):
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1)
+            mock_run.return_value = MagicMock(returncode=1, stdout=b"")
             assert _capture_now(make_client()) is None
 
     def test_returns_none_on_zero_size(self):
@@ -35,18 +24,45 @@ class TestCaptureNow:
         with patch("subprocess.run", side_effect=Exception("boom")):
             assert _capture_now(make_client()) is None
 
-    def test_calls_grim_with_correct_geometry(self):
+    def test_calls_grim_with_stdout_pipe(self):
+        """grim must be called with '-' as output (stdout pipe, no disk write)."""
         calls = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            return MagicMock(returncode=1)
+            return MagicMock(returncode=1, stdout=b"")
 
         with patch("subprocess.run", side_effect=fake_run):
-            _capture_now(make_client(addr="0x1", x=100, y=200, w=800, h=600))
+            _capture_now(make_client(x=100, y=200, w=800, h=600))
 
-        assert calls[0][0] == "grim"
-        assert calls[0][2] == "100,200 800x600"
+        assert calls[0][-1] == "-", "grim must output to stdout ('-'), not a file"
+
+    def test_correct_geometry_string(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=1, stdout=b"")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _capture_now(make_client(x=100, y=200, w=800, h=600))
+
+        assert "100,200 800x600" in calls[0]
+
+    def test_no_temp_files_created(self):
+        """Capture must not write any files to disk."""
+        import os
+        import tempfile
+        tmp_before = set(os.listdir(tempfile.gettempdir()))
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout=b"")
+            _capture_now(make_client())
+
+        tmp_after = set(os.listdir(tempfile.gettempdir()))
+        new_files = tmp_after - tmp_before
+        hyprmctl_files = [f for f in new_files if "hyprmctl" in f]
+        assert hyprmctl_files == [], f"Unexpected temp files: {hyprmctl_files}"
 
 
 class TestThumbnailCache:
@@ -69,15 +85,13 @@ class TestThumbnailCache:
 
     def test_store_updates_existing(self):
         cache = ThumbnailCache()
-        pb1 = MagicMock()
-        pb2 = MagicMock()
+        pb1, pb2 = MagicMock(), MagicMock()
         cache._store("0xabc", pb1)
         cache._store("0xabc", pb2)
         assert cache.get("0xabc") is pb2
-        assert cache._order.count("0xabc") == 1  # no duplicate in order list
+        assert cache._order.count("0xabc") == 1
 
     def test_thread_safe_get(self):
-        """get() must not raise under concurrent access."""
         import threading
         cache = ThumbnailCache()
         for i in range(20):

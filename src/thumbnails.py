@@ -21,7 +21,6 @@ from __future__ import annotations
 import os
 import socket
 import subprocess
-import tempfile
 import threading
 from typing import Any
 
@@ -30,45 +29,38 @@ import gi
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GdkPixbuf  # noqa: E402
 
-_TMP_DIR    = tempfile.gettempdir()
 _TIMEOUT    = 2.0   # grim per-capture timeout (seconds)
 _CACHE_MAX  = 64    # max cached entries (evict oldest)
-
-
-def _tmp_path(address: str) -> str:
-    return os.path.join(_TMP_DIR, f"hyprmctl-{address.replace('0x','')}.png")
+_REFRESH_S  = 10    # re-capture active window every N seconds
 
 
 def _capture_now(client: dict[str, Any]) -> GdkPixbuf.Pixbuf | None:
     """
-    Capture the window described by `client` via grim.
-    The window MUST be visually on top when this is called.
-    Returns a GdkPixbuf or None on any failure.
+    Capture the window via grim entirely in RAM — no disk writes.
+    grim writes PNG to stdout; piped directly into GdkPixbuf.PixbufLoader.
+    Window must be visually on top when called.
     """
     at   = client.get("at",   [0, 0])
     size = client.get("size", [0, 0])
-    addr = client.get("address", "unknown")
     w, h = int(size[0]), int(size[1])
     if w <= 0 or h <= 0:
         return None
 
-    out = _tmp_path(addr)
     geo = f"{int(at[0])},{int(at[1])} {w}x{h}"
     try:
         r = subprocess.run(
-            ["grim", "-g", geo, out],
-            capture_output=True, timeout=_TIMEOUT,
+            ["grim", "-g", geo, "-"],   # "-" = write PNG to stdout
+            capture_output=True,
+            timeout=_TIMEOUT,
         )
-        if r.returncode != 0 or not os.path.exists(out):
+        if r.returncode != 0 or not r.stdout:
             return None
-        return GdkPixbuf.Pixbuf.new_from_file(out)
+        loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+        loader.write(r.stdout)
+        loader.close()
+        return loader.get_pixbuf()
     except Exception:
         return None
-    finally:
-        try:
-            os.unlink(out)
-        except OSError:
-            pass
 
 
 class ThumbnailCache:
@@ -138,7 +130,6 @@ class ThumbnailCache:
         instance = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")
         uid      = os.getuid()
 
-        # Find the active socket
         sock_dir = f"/run/user/{uid}/hypr"
         if not instance:
             try:
@@ -152,6 +143,11 @@ class ThumbnailCache:
 
         # Capture current active window before subscribing
         self._capture_active()
+
+        # Periodic refresh timer — re-captures active window every _REFRESH_S
+        refresh_timer = threading.Timer(_REFRESH_S, self._refresh_tick)
+        refresh_timer.daemon = True
+        refresh_timer.start()
 
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
@@ -171,6 +167,16 @@ class ThumbnailCache:
                         self._handle_event(line.strip())
         except Exception:
             pass
+        finally:
+            refresh_timer.cancel()
+
+    def _refresh_tick(self) -> None:
+        """Periodic: re-capture the active window, then reschedule."""
+        if not self._stop.is_set():
+            self._capture_active()
+            t = threading.Timer(_REFRESH_S, self._refresh_tick)
+            t.daemon = True
+            t.start()
 
     def _handle_event(self, line: str) -> None:
         if ">>" not in line:
