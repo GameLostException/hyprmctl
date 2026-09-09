@@ -25,94 +25,69 @@ def make_client(addr, cls="firefox", title="Window"):
 class TestFocusWindowDispatch:
     """Verify the hyprctl command issued on tile click."""
 
-    def test_dispatch_format(self):
-        called_with = []
+    def test_dispatch_uses_batch_with_no_warps(self):
+        """focuswindow must use --batch with cursor:no_warps wrapping."""
+        calls = []
 
         def fake_run(cmd, **kwargs):
-            called_with.append(cmd)
+            calls.append(cmd)
 
         with patch("subprocess.run", side_effect=fake_run):
             import subprocess
             addr = "0xdeadbeef"
             subprocess.run(
-                ["hyprctl", "dispatch", "focuswindow", f"address:{addr}"],
+                ["hyprctl", "--batch",
+                 f"keyword cursor:no_warps true ; "
+                 f"dispatch focuswindow address:{addr} ; "
+                 f"keyword cursor:no_warps false"],
                 capture_output=True,
             )
 
-        assert called_with == [
-            ["hyprctl", "dispatch", "focuswindow", "address:0xdeadbeef"]
-        ]
+        assert len(calls) == 1
+        cmd = calls[0]
+        assert cmd[0] == "hyprctl"
+        assert cmd[1] == "--batch"
+        assert "cursor:no_warps true" in cmd[2]
+        assert f"focuswindow address:{addr}" in cmd[2]
+        assert "cursor:no_warps false" in cmd[2]
 
     def test_dispatch_uses_client_address(self):
         """Each tile must dispatch with its own address."""
-        addresses = ["0x001", "0x002", "0x003"]
         dispatched = []
 
         def fake_run(cmd, **kwargs):
-            dispatched.append(cmd[-1])  # "address:0x..."
+            dispatched.append(cmd[2])  # the batch string
 
         with patch("subprocess.run", side_effect=fake_run):
             import subprocess
-            for addr in addresses:
+            for addr in ["0x001", "0x002", "0x003"]:
                 subprocess.run(
-                    ["hyprctl", "dispatch", "focuswindow", f"address:{addr}"],
+                    ["hyprctl", "--batch",
+                     f"keyword cursor:no_warps true ; "
+                     f"dispatch focuswindow address:{addr} ; "
+                     f"keyword cursor:no_warps false"],
                     capture_output=True,
                 )
 
-        assert dispatched == [f"address:{a}" for a in addresses]
+        assert "focuswindow address:0x001" in dispatched[0]
+        assert "focuswindow address:0x002" in dispatched[1]
+        assert "focuswindow address:0x003" in dispatched[2]
 
-    def test_monocle_sends_bringactivetotop(self):
-        """In monocle layout, bringactivetotop must be dispatched after focuswindow."""
+    def test_single_ipc_call_per_focus(self):
+        """Only one hyprctl call should be made per tile click (no separate bringactivetotop)."""
         calls = []
 
-        getoption_output = "str: monocle\nset: true\n"
-
-        def fake_run(cmd, **kwargs):
-            m = MagicMock()
-            if cmd == ["hyprctl", "getoption", "general:layout"]:
-                m.stdout = getoption_output
-                return m
-            calls.append(cmd)
-            return m
-
-        with patch("subprocess.run", side_effect=fake_run):
+        with patch("subprocess.run", side_effect=lambda cmd, **kw: calls.append(cmd)):
             import subprocess
             subprocess.run(
-                ["hyprctl", "dispatch", "focuswindow", "address:0xabc"],
+                ["hyprctl", "--batch",
+                 "keyword cursor:no_warps true ; "
+                 "dispatch focuswindow address:0xabc ; "
+                 "keyword cursor:no_warps false"],
                 capture_output=True,
             )
-            # Simulate monocle branch
-            layout = "monocle"  # as returned by _active_layout()
-            if layout == "monocle":
-                subprocess.run(
-                    ["hyprctl", "dispatch", "bringactivetotop"],
-                    capture_output=True,
-                )
 
-        assert ["hyprctl", "dispatch", "bringactivetotop"] in calls
-
-    def test_dwindle_does_not_send_bringactivetotop(self):
-        """In dwindle layout, bringactivetotop must NOT be dispatched."""
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return MagicMock()
-
-        with patch("subprocess.run", side_effect=fake_run):
-            import subprocess
-            layout = "dwindle"  # as returned by _active_layout()
-            subprocess.run(
-                ["hyprctl", "dispatch", "focuswindow", "address:0xabc"],
-                capture_output=True,
-            )
-            if layout == "monocle":
-                subprocess.run(
-                    ["hyprctl", "dispatch", "bringactivetotop"],
-                    capture_output=True,
-                )
-
-        assert ["hyprctl", "dispatch", "bringactivetotop"] not in calls
+        assert len(calls) == 1
 
 
 class TestKeyboardNavIndex:

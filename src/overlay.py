@@ -25,29 +25,6 @@ from src.hypr import get_active_monitor, get_active_workspace_clients  # noqa: E
 from src.layout import compute_layout  # noqa: E402
 from src.tiles import TileWidget  # noqa: E402
 
-
-def _active_layout() -> str:
-    """
-    Return the current Hyprland layout name.
-
-    Uses 'hyprctl getoption general:layout' which reflects the runtime value
-    set by hawesome (e.g. 'monocle'). The tiledLayout field in activeworkspace
-    only reflects the tiling algorithm (dwindle/master), not runtime overrides.
-    """
-    try:
-        result = subprocess.run(
-            ["hyprctl", "getoption", "general:layout"],
-            capture_output=True, text=True, check=True,
-        )
-        # Output format: "str: monocle\nset: true\n"
-        for line in result.stdout.splitlines():
-            if line.startswith("str:"):
-                return line.split(":", 1)[1].strip()
-    except Exception:
-        pass
-    return "dwindle"
-
-
 _BASE_CSS = """
 .mc-root {
     background-color: rgba(0, 0, 0, 0.72);
@@ -229,17 +206,17 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
     # ── Event handlers ───────────────────────────────────────────────────────
 
     def _on_tile_click(self, address: str) -> None:
+        # Use --batch with cursor:no_warps to ensure the window is brought
+        # to front in all layouts including monocle. This mirrors the approach
+        # used by wayapps' focus_window_no_warp(). Without cursor:no_warps,
+        # monocle layout does not visually raise the focused window.
         subprocess.run(
-            ["hyprctl", "dispatch", "focuswindow", f"address:{address}"],
+            ["hyprctl", "--batch",
+             f"keyword cursor:no_warps true ; "
+             f"dispatch focuswindow address:{address} ; "
+             f"keyword cursor:no_warps false"],
             capture_output=True,
         )
-        # In monocle layout, focuswindow alone doesn't visually bring the window
-        # to the front of the Z-stack. bringactivetotop fixes this.
-        if _active_layout() == "monocle":
-            subprocess.run(
-                ["hyprctl", "dispatch", "bringactivetotop"],
-                capture_output=True,
-            )
         self.close()
 
     def _on_bg_click(self, gesture, n_press, x, y) -> None:
