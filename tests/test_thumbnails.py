@@ -12,57 +12,45 @@ def make_client(addr="0xabc", x=0, y=0, w=800, h=600):
 
 
 class TestCaptureNow:
-    def test_returns_none_on_grim_failure(self):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stdout=b"")
+    def _fake_run(self, calls, returncode=1, stdout=b""):
+        def fake(cmd, **kwargs):
+            calls.append(list(cmd))
+            m = MagicMock()
+            m.returncode = returncode
+            m.stdout = stdout
+            m.stderr = b""
+            return m
+        return fake
+
+    def test_returns_none_on_failure(self):
+        with patch("subprocess.run", side_effect=self._fake_run([], returncode=1)):
             assert _capture_now(make_client()) is None
 
-    def test_returns_none_on_zero_size(self):
-        assert _capture_now(make_client(w=0, h=0)) is None
+    def test_returns_none_on_missing_address(self):
+        assert _capture_now({"size": [800, 600], "at": [0, 0]}) is None
 
     def test_returns_none_on_exception(self):
         with patch("subprocess.run", side_effect=Exception("boom")):
             assert _capture_now(make_client()) is None
 
-    def test_calls_grim_with_stdout_pipe(self):
-        """grim must be called with '-' as output (stdout pipe, no disk write)."""
+    def test_calls_hyprshot_with_address(self):
+        """hyprshot must be called with the window address."""
         calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return MagicMock(returncode=1, stdout=b"")
-
-        with patch("subprocess.run", side_effect=fake_run):
-            _capture_now(make_client(x=100, y=200, w=800, h=600))
-
-        assert calls[0][-1] == "-", "grim must output to stdout ('-'), not a file"
-
-    def test_correct_geometry_string(self):
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return MagicMock(returncode=1, stdout=b"")
-
-        with patch("subprocess.run", side_effect=fake_run):
-            _capture_now(make_client(x=100, y=200, w=800, h=600))
-
-        assert "100,200 800x600" in calls[0]
+        with patch("subprocess.run", side_effect=self._fake_run(calls, returncode=1)):
+            _capture_now(make_client(addr="0xdeadbeef"))
+        assert calls, "no subprocess call made"
+        first_call = calls[0]
+        assert "hyprshot" in first_call[0], f"expected hyprshot, got {first_call[0]}"
+        assert "0xdeadbeef" in first_call[1], "address not passed to hyprshot"
 
     def test_no_temp_files_created(self):
-        """Capture must not write any files to disk."""
         import os
         import tempfile
         tmp_before = set(os.listdir(tempfile.gettempdir()))
-
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stdout=b"")
+        with patch("subprocess.run", side_effect=self._fake_run([], returncode=1)):
             _capture_now(make_client())
-
         tmp_after = set(os.listdir(tempfile.gettempdir()))
-        new_files = tmp_after - tmp_before
-        hyprmctl_files = [f for f in new_files if "hyprmctl" in f]
-        assert hyprmctl_files == [], f"Unexpected temp files: {hyprmctl_files}"
+        assert not [f for f in tmp_after - tmp_before if "hyprmctl" in f]
 
 
 class TestThumbnailCache:
