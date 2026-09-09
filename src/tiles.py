@@ -146,13 +146,11 @@ class TileWidget(Gtk.Box):
     # ── Colour-fill mode ──────────────────────────────────────────────────────
 
     def _build_colour_fill(self, app_class: str, title: str) -> None:
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        box.set_hexpand(True)
-        box.set_vexpand(True)
-        box.set_margin_top(6)
-        box.set_margin_bottom(6)
-        box.set_margin_start(8)
-        box.set_margin_end(8)
+        self.set_spacing(6)
+        self.set_margin_top(6)
+        self.set_margin_bottom(6)
+        self.set_margin_start(8)
+        self.set_margin_end(8)
 
         icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         icon_row.set_halign(Gtk.Align.START)
@@ -164,7 +162,7 @@ class TileWidget(Gtk.Box):
         cls_label.set_ellipsize(3)
         cls_label.add_css_class("tile-class")
         icon_row.append(cls_label)
-        box.append(icon_row)
+        self.append(icon_row)
 
         title_label = Gtk.Label(label=title)
         title_label.set_halign(Gtk.Align.START)
@@ -173,12 +171,11 @@ class TileWidget(Gtk.Box):
         title_label.set_max_width_chars(30)
         title_label.set_ellipsize(3)
         title_label.add_css_class("tile-title")
-        box.append(title_label)
+        self.append(title_label)
 
         spacer = Gtk.Box()
         spacer.set_vexpand(True)
-        box.append(spacer)
-        self.set_child(box)
+        self.append(spacer)
 
     # ── Shared ────────────────────────────────────────────────────────────────
 
