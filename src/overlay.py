@@ -93,42 +93,37 @@ def _explosion_arc(
     screen_w: float, screen_h: float,
 ) -> tuple[float, float]:
     """
-    Return (arc_start_deg, arc_span_deg) for the explosion direction.
-    0° = right, 90° = down (screen coords).
-    Based on cell center position relative to screen.
+    Return (arc_start_deg, arc_span_deg).
+    0°=right, 90°=down (screen coords, Y increases downward).
+    Explosion goes AWAY from the nearest screen edge(s).
     """
     cx = cell_x + cell_w / 2
     cy = cell_y + cell_h / 2
-    rel_x = cx / screen_w   # 0 = left, 1 = right
-    rel_y = cy / screen_h   # 0 = top, 1 = bottom
+    rel_x = cx / screen_w
+    rel_y = cy / screen_h
 
-    # Determine available directions (where there is screen space)
-    can_left  = rel_x > 0.25
-    can_right = rel_x < 0.75
-    can_up    = rel_y > 0.25
-    can_down  = rel_y < 0.75
+    near_left   = rel_x < 0.33
+    near_right  = rel_x > 0.67
+    near_top    = rel_y < 0.33
+    near_bottom = rel_y > 0.67
 
-    if can_left and can_right and can_up and can_down:
-        return 0.0, 360.0    # center: full radial
-
-    if not can_left and not can_up:     # top-left corner → SE
-        return 0.0, 90.0
-    if not can_right and not can_up:    # top-right corner → SW
-        return 90.0, 90.0
-    if not can_left and not can_down:   # bottom-left corner → NE
-        return 270.0, 90.0
-    if not can_right and not can_down:  # bottom-right corner → NW
-        return 180.0, 90.0
-    if not can_up:                      # top edge → downward 180°
-        return 0.0, 180.0
-    if not can_down:                    # bottom edge → upward 180°
-        return 180.0, 180.0
-    if not can_left:                    # left edge → rightward 180°
-        return 270.0, 180.0
-    if not can_right:                   # right edge → leftward 180°
-        return 90.0, 180.0
-
-    return 0.0, 360.0
+    if near_left and near_top:
+        return 0.0, 90.0        # TL → SE
+    if near_right and near_top:
+        return 90.0, 90.0       # TR → SW
+    if near_left and near_bottom:
+        return -90.0, 90.0      # BL → NE
+    if near_right and near_bottom:
+        return 180.0, 90.0      # BR → NW
+    if near_top:
+        return 0.0, 180.0       # top edge → downward
+    if near_bottom:
+        return -180.0, 180.0    # bot edge → upward
+    if near_left:
+        return -90.0, 180.0     # left edge → rightward
+    if near_right:
+        return 90.0, 180.0      # right edge → leftward
+    return 0.0, 360.0           # center → full radial
 
 
 def _explosion_positions(
@@ -328,6 +323,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             widget.set_size_request(int(tile_geo.w), int(tile_geo.h))
             widget._orig_x = tile_geo.x
             widget._orig_y = tile_geo.y
+            widget._cur_x  = tile_geo.x   # tracks current animated position
+            widget._cur_y  = tile_geo.y
             widget._tile_w = tile_geo.w
             widget._tile_h = tile_geo.h
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
@@ -355,11 +352,18 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             icon_y = cell_y + cell_h / 2 - _ICON_SIZE / 2
             self._fixed.put(icon_widget, icon_x, icon_y)
 
-            # Label below icon
-            label = Gtk.Label(label=cls.upper())
+            # Label centered below icon
+            label = Gtk.Label(label=cls)
             label.add_css_class("group-label")
             label.set_halign(Gtk.Align.CENTER)
-            self._fixed.put(label, icon_x, icon_y + _ICON_SIZE + 4)
+            label.set_max_width_chars(16)
+            label.set_ellipsize(3)
+            label_w = 120
+            self._fixed.put(
+                label,
+                icon_x + _ICON_SIZE / 2 - label_w / 2,
+                icon_y + _ICON_SIZE + 5,
+            )
 
             stack = Stack(
                 app_class=cls,
@@ -419,17 +423,15 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
     def _animate_stack(self, stack: Stack, explode: bool) -> None:
         """Start a smooth position animation for the stack."""
-        # Cancel any running animation for this stack
         if stack._anim_id:
             GLib.source_remove(stack._anim_id)
             stack._anim_id = 0
 
-        from_pos = [(w._orig_x, w._orig_y) for w in stack.widgets] if not explode \
-                   else stack.exploded_pos
+        # Always animate FROM current widget positions (handles mid-anim reversal)
+        from_pos = [(w._cur_x, w._cur_y) for w in stack.widgets]
         to_pos   = stack.exploded_pos if explode else \
                    [(w._orig_x, w._orig_y) for w in stack.widgets]
 
-        # Simpler: just use from_pos as starting point
         step = [0]
         ease = _ease_out_cubic if explode else _ease_in_cubic
 
@@ -442,6 +444,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 nx = fx + (tx - fx) * et
                 ny = fy + (ty - fy) * et
                 self._fixed.move(w, nx, ny)
+                w._cur_x = nx
+                w._cur_y = ny
 
             if t < 1.0:
                 stack._anim_id = GLib.timeout_add(_ANIM_MS, tick)
