@@ -160,7 +160,6 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self._place_tiles(tiles)
 
     def _place_tiles(self, tiles) -> None:
-        # Group tiles by app class to find the hero (last = on top) per group
         from collections import defaultdict
         by_class: dict = defaultdict(list)
         for tile_geo in tiles:
@@ -168,27 +167,60 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             by_class[cls].append(tile_geo)
 
         # Track heroes for label placement
-        heroes: dict = {}  # class -> last TileGeometry in group (hero)
+        heroes: dict = {}
         for cls, group_tiles in by_class.items():
             heroes[cls] = group_tiles[-1]
 
-        # Place all tiles (insertion order = z-order; hero is last in group = on top)
+        # Place tiles — hero last per group so it's on top in z-order
         for tile_geo in tiles:
             widget = TileWidget(tile_geo.client, on_click=self._on_tile_click)
             widget.set_size_request(int(tile_geo.w), int(tile_geo.h))
             widget.add_css_class("tile-animate")
+            widget._geo = tile_geo  # store for expand/collapse
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
 
             delay = 20 + len(self._tiles) * 15
             GLib.timeout_add(delay, self._animate_in, widget)
 
-        # Place group label below each hero tile
+        # Attach hover-expand to each stack group
+        for cls, group_tiles in by_class.items():
+            widgets = [t for t in self._tiles if t._geo in group_tiles]
+            self._attach_stack_hover(widgets)
+
+        # Label below each hero
         for cls, hero in heroes.items():
             label = Gtk.Label(label=cls.upper())
             label.add_css_class("group-label")
             label.set_halign(Gtk.Align.CENTER)
             self._fixed.put(label, hero.x, hero.y + hero.h + 6)
+
+    def _attach_stack_hover(self, widgets: list) -> None:
+        """
+        On hover-enter any tile in the stack: fan all tiles out so each has
+        a clearly clickable region. On hover-leave: collapse back.
+        """
+        if len(widgets) <= 1:
+            return
+
+        # Compute expanded positions: spread tiles horizontally with overlap
+        # Each tile shifts right by ~60% of its width so titles are visible
+        def expand():
+            for i, w in enumerate(widgets):
+                geo = w._geo
+                shift = i * int(geo.w * 0.28)
+                self._fixed.move(w, geo.x + shift, geo.y)
+
+        def collapse():
+            for w in widgets:
+                geo = w._geo
+                self._fixed.move(w, geo.x, geo.y)
+
+        for w in widgets:
+            motion = Gtk.EventControllerMotion()
+            motion.connect("enter", lambda *_: expand())
+            motion.connect("leave", lambda *_: GLib.timeout_add(300, lambda: collapse() or False))
+            w.add_controller(motion)
 
     @staticmethod
     def _animate_in(widget: Gtk.Widget) -> bool:
