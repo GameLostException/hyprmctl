@@ -1,45 +1,40 @@
 """
-src/layout.py — Pure tile geometry calculation. No GTK, fully unit-testable.
+src/layout.py — Proportional row-packing layout. No GTK, fully unit-testable.
 
-Zone-based layout algorithm
-============================
+Algorithm — macOS Mission Control style
+========================================
 
-Step 1 — Group & sort
-    Group clients by app class. Sort groups by window count descending
-    (most windows = most screen real estate).
+Goal: fill the available screen area with scaled-down window thumbnails that
+preserve each window's real aspect ratio and relative size.
 
-Step 2 — Partition the screen into zones
-    Divide the available area into vertical strips, one per group.
-    Each strip's width is proportional to the group's window count
-    (so a group with 4 windows gets twice the width of one with 2).
+Steps
+-----
+1.  Collect real window sizes. If a window has no meaningful size, use 16:9.
+2.  Binary-search for a scale factor S (0 < S ≤ 1) such that:
+      - Every window is scaled by S.
+      - Windows are packed left-to-right into rows (greedy, no sorting by app).
+      - The total height of all rows + gaps fits within avail_h.
+3.  Once S is found, repack windows into rows and compute final (x, y) for each.
+4.  Distribute rows vertically so they fill avail_h evenly.
 
-    For a single group the strip is the whole screen.
+No grouping by app class — windows are ordered by their original position in the
+input list (caller decides order).  The overlay passes clients in the order
+returned by hyprctl (roughly Z-order / creation order) which is fine.
 
-Step 3 — Tile within each zone
-    Inside each strip, find the grid layout (cols × rows) that maximises
-    tile area. Each window gets one cell; tiles are aspect-ratio-preserved
-    and centred in their cell.
-
-Visual example — 4 × thunar + 2 × kitty on 1920×1080:
-
-    ┌──────────────────────────┬────────────────┐
-    │  THUNAR (4)  2/3 width   │ KITTY (2) 1/3  │
-    │  ┌────┐ ┌────┐           │  ┌────┐        │
-    │  │    │ │    │           │  │    │        │
-    │  └────┘ └────┘           │  └────┘        │
-    │  ┌────┐ ┌────┐           │  ┌────┐        │
-    │  │    │ │    │           │  │    │        │
-    │  └────┘ └────┘           │  └────┘        │
-    └──────────────────────────┴────────────────┘
-
-Group label is placed above each zone.
+Minimum tile size
+-----------------
+A window is never scaled below MIN_TILE_W × MIN_TILE_H regardless of how many
+windows are open.  When there are many small windows the layout may exceed the
+screen height slightly — this is preferable to unreadably tiny tiles.
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any
+
+MIN_TILE_W = 160   # px — never scale a tile narrower than this
+MIN_TILE_H = 100   # px — never scale a tile shorter than this
 
 
 @dataclass
@@ -52,7 +47,7 @@ class TileGeometry:
 
 
 def group_by_class(clients: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    """Group clients by their wm_class, preserving insertion order."""
+    """Group clients by their wm_class (kept for overlay group-label usage)."""
     groups: dict[str, list[dict[str, Any]]] = {}
     for c in clients:
         cls = c.get("class") or c.get("initialClass") or "unknown"
@@ -60,140 +55,157 @@ def group_by_class(clients: list[dict[str, Any]]) -> dict[str, list[dict[str, An
     return groups
 
 
-def _sort_groups(groups: dict[str, list]) -> list[list[dict[str, Any]]]:
-    """Return groups sorted by descending window count."""
-    return sorted(groups.values(), key=lambda g: len(g), reverse=True)
-
-
-def _client_aspect(client: dict[str, Any]) -> float:
-    """Return width/height aspect ratio, defaulting to 16/9."""
+def _window_size(client: dict[str, Any]) -> tuple[float, float]:
+    """Return (w, h) for a client, falling back to 16:9 at 800×450."""
     size = client.get("size", [0, 0])
-    w, h = size[0], size[1]
-    if h == 0:
-        return 16 / 9
-    return w / h
-
-
-def _fit_in_cell(cell_w: float, cell_h: float, aspect: float) -> tuple[float, float]:
-    """Scale a rectangle with the given aspect ratio to fit cell_w × cell_h."""
-    if cell_w / cell_h >= aspect:
-        h = cell_h
-        w = h * aspect
-    else:
-        w = cell_w
-        h = w / aspect
+    w, h = float(size[0]), float(size[1])
+    if w <= 0 or h <= 0:
+        return 800.0, 450.0
     return w, h
 
 
-def _best_grid(n: int, zone_w: float, zone_h: float, gap: int) -> tuple[int, int]:
-    """
-    Return (cols, rows) that maximises tile area for n windows in zone_w × zone_h.
-    """
-    best_cols, best_rows, best_area = 1, n, 0.0
-    for cols in range(1, n + 1):
-        rows = math.ceil(n / cols)
-        cell_w = (zone_w - gap * (cols - 1)) / cols
-        cell_h = (zone_h - gap * (rows - 1)) / rows
-        if cell_w <= 0 or cell_h <= 0:
-            break
-        area = cell_w * cell_h
-        if area > best_area:
-            best_area = area
-            best_cols, best_rows = cols, rows
-    return best_cols, best_rows
-
-
-def _tile_zone(
+def _pack_rows(
     clients: list[dict[str, Any]],
-    zone_x: float,
-    zone_y: float,
-    zone_w: float,
-    zone_h: float,
-    gap: int,
-) -> list[TileGeometry]:
-    """Tile `clients` inside a rectangular zone, returning TileGeometry list."""
-    n = len(clients)
-    if n == 0:
-        return []
+    scale: float,
+    avail_w: float,
+    gap: float,
+) -> list[list[dict[str, Any]]]:
+    """
+    Greedily pack clients into rows at the given scale.
+    Each row is as wide as avail_w allows.
+    """
+    rows: list[list[dict[str, Any]]] = []
+    current_row: list[dict[str, Any]] = []
+    current_w = 0.0
 
-    cols, rows = _best_grid(n, zone_w, zone_h, gap)
-    cell_w = (zone_w - gap * (cols - 1)) / cols
-    cell_h = (zone_h - gap * (rows - 1)) / rows
+    for client in clients:
+        w, _ = _window_size(client)
+        tw = max(w * scale, MIN_TILE_W)
 
-    tiles = []
-    for i, client in enumerate(clients):
-        col = i % cols
-        row = i // cols
+        if current_row and current_w + gap + tw > avail_w + 0.5:
+            rows.append(current_row)
+            current_row = [client]
+            current_w = tw
+        else:
+            current_row.append(client)
+            current_w += (gap if current_row else 0) + tw
 
-        cx = zone_x + col * (cell_w + gap)
-        cy = zone_y + row * (cell_h + gap)
+    if current_row:
+        rows.append(current_row)
 
-        aspect = _client_aspect(client)
-        tw, th = _fit_in_cell(cell_w, cell_h, aspect)
+    return rows
 
-        # Centre within cell
-        tx = cx + (cell_w - tw) / 2
-        ty = cy + (cell_h - th) / 2
 
-        tiles.append(TileGeometry(x=tx, y=ty, w=tw, h=th, client=client))
+def _row_height(row: list[dict[str, Any]], scale: float) -> float:
+    """Return the height of a row = max scaled window height in that row."""
+    return max(max(_window_size(c)[1] * scale, MIN_TILE_H) for c in row)
 
-    return tiles
+
+def _total_height(
+    rows: list[list[dict[str, Any]]],
+    scale: float,
+    row_gap: float,
+) -> float:
+    """Total height consumed by all rows at this scale."""
+    if not rows:
+        return 0.0
+    h = sum(_row_height(r, scale) for r in rows)
+    h += row_gap * (len(rows) - 1)
+    return h
+
+
+def _find_scale(
+    clients: list[dict[str, Any]],
+    avail_w: float,
+    avail_h: float,
+    gap: float,
+    row_gap: float,
+) -> float:
+    """
+    Binary search for the largest scale S such that all windows packed into
+    rows fit within avail_h.  Clamps to MIN_TILE constraints.
+    """
+    lo, hi = 0.001, 1.0
+
+    # Quick check: if even scale=1.0 fits, return 1.0
+    rows = _pack_rows(clients, 1.0, avail_w, gap)
+    if _total_height(rows, 1.0, row_gap) <= avail_h:
+        return 1.0
+
+    for _ in range(48):          # 48 iterations → sub-pixel precision
+        mid = (lo + hi) / 2
+        rows = _pack_rows(clients, mid, avail_w, gap)
+        if _total_height(rows, mid, row_gap) <= avail_h:
+            lo = mid
+        else:
+            hi = mid
+
+    return lo
 
 
 def compute_layout(
     clients: list[dict[str, Any]],
     monitor_w: int,
     monitor_h: int,
-    padding: int = 40,
-    gap: int = 12,
-    zone_gap: int = 20,
+    padding: int = 48,
+    gap: int = 16,
+    row_gap: int = 24,
 ) -> list[TileGeometry]:
     """
-    Compute tile positions for all clients using zone-based layout.
+    Compute tile positions using proportional row-packing (macOS style).
 
-    Each app class gets a vertical strip proportional to its window count.
-    Within each strip, windows are laid out in the best-fit grid.
+    Windows keep their real aspect ratios and relative sizes.
+    No grouping — windows are laid out in input order.
 
     Parameters
     ----------
-    clients:    All clients to lay out (will be grouped internally).
+    clients:    All clients to lay out.
     monitor_w:  Monitor logical width in pixels.
     monitor_h:  Monitor logical height in pixels.
     padding:    Margin around the whole screen (px).
-    gap:        Gap between tiles within a zone (px).
-    zone_gap:   Gap between zone strips (px).
+    gap:        Horizontal gap between tiles in a row (px).
+    row_gap:    Vertical gap between rows (px).
     """
     if not clients:
         return []
 
-    groups = group_by_class(clients)
-    sorted_groups = _sort_groups(groups)
-
     avail_w = monitor_w - 2 * padding
     avail_h = monitor_h - 2 * padding
 
-    # Total window count (denominator for proportional widths)
-    total = sum(len(g) for g in sorted_groups)
-    n_groups = len(sorted_groups)
+    scale = _find_scale(clients, avail_w, avail_h, gap, row_gap)
+    rows = _pack_rows(clients, scale, avail_w, gap)
 
-    # Total horizontal space consumed by zone gaps
-    gap_total = zone_gap * (n_groups - 1)
-    strip_pool = avail_w - gap_total  # pixels available for actual zone content
+    if not rows:
+        return []
+
+    # Distribute rows vertically to fill avail_h
+    n_rows = len(rows)
+    total_rows_h = sum(_row_height(r, scale) for r in rows)
+    total_gap_h = row_gap * (n_rows - 1)
+    extra_v = max(0.0, avail_h - total_rows_h - total_gap_h)
+    # Spread extra space: half at top, half at bottom, equal between rows
+    v_padding = extra_v / (n_rows + 1) if n_rows > 0 else 0.0
 
     tiles: list[TileGeometry] = []
-    x_cursor = float(padding)
+    y = padding + v_padding
 
-    for group in sorted_groups:
-        # Zone width proportional to window count
-        zone_w = strip_pool * len(group) / total
-        zone_h = float(avail_h)
-        zone_x = x_cursor
-        zone_y = float(padding)
+    for row in rows:
+        row_h = _row_height(row, scale)
 
-        # Sort windows within group by title for stable ordering
-        sorted_clients = sorted(group, key=lambda c: c.get("title", ""))
+        # Distribute windows horizontally within the row
+        # Compute total row width then centre it
+        scaled_widths = [max(_window_size(c)[0] * scale, MIN_TILE_W) for c in row]
+        total_row_w = sum(scaled_widths) + gap * (len(row) - 1)
+        x = padding + (avail_w - total_row_w) / 2   # centre each row
 
-        tiles.extend(_tile_zone(sorted_clients, zone_x, zone_y, zone_w, zone_h, gap))
-        x_cursor += zone_w + zone_gap
+        for client, tw in zip(row, scaled_widths):
+            _, ch = _window_size(client)
+            th = max(ch * scale, MIN_TILE_H)
+            # Align window to bottom of row (tallest window sits flush at row bottom)
+            ty = y + (row_h - th)
+            tiles.append(TileGeometry(x=x, y=ty, w=tw, h=th, client=client))
+            x += tw + gap
+
+        y += row_h + row_gap + v_padding
 
     return tiles
