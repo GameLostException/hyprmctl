@@ -4,12 +4,9 @@ File system calls are mocked.
 """
 
 from pathlib import Path
-from unittest.mock import patch, mock_open, MagicMock
+from unittest.mock import mock_open, patch
 
-import pytest
-
-from src.icons import find_icon_name, get_icon_path, _parse_desktop_file
-
+from src.icons import _parse_desktop_file, find_icon_name, get_icon_path
 
 FIREFOX_DESKTOP = """\
 [Desktop Entry]
@@ -77,7 +74,6 @@ class TestParseDesktopFile:
 class TestFindIconName:
     def _mock_index(self, data: dict):
         """Patch _load_desktop_index to return a fixed dict."""
-        from src.icons import _load_desktop_index
         return patch("src.icons._load_desktop_index", return_value=data)
 
     def test_direct_match(self):
@@ -106,7 +102,6 @@ class TestGetIconPath:
         icon_file = icon_dir / "firefox.png"
         icon_file.write_bytes(b"fake_png")
 
-        from src.icons import _load_desktop_index
         with patch("src.icons._load_desktop_index", return_value={"firefox": "firefox"}):
             with patch("src.icons._DESKTOP_DIRS", [tmp_path]):
                 # Patch search dirs to use tmp_path

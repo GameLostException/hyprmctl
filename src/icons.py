@@ -5,7 +5,6 @@ src/icons.py — App icon resolution from .desktop files and GTK icon theme.
 from __future__ import annotations
 
 import os
-import re
 from functools import lru_cache
 from pathlib import Path
 

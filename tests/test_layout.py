@@ -3,13 +3,10 @@ tests/test_layout.py — Unit tests for src/layout.py.
 Pure functions; no mocking needed.
 """
 
-import pytest
 from src.layout import (
-    TileGeometry,
-    group_by_class,
-    compute_layout,
     _fit_in_cell,
-    _best_column_count,
+    compute_layout,
+    group_by_class,
 )
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -101,8 +98,8 @@ class TestComputeLayout:
         for t in tiles:
             assert t.x >= 40, f"tile x={t.x} too small"
             assert t.y >= 40, f"tile y={t.y} too small"
-            assert t.x + t.w <= self.W - 40 + 1, f"tile right edge out of bounds"
-            assert t.y + t.h <= self.H - 40 + 1, f"tile bottom edge out of bounds"
+            assert t.x + t.w <= self.W - 40 + 1, "tile right edge out of bounds"
+            assert t.y + t.h <= self.H - 40 + 1, "tile bottom edge out of bounds"
 
     def test_one_tile_per_client(self):
         clients = [make_client(f"0x{i}", f"app{i}") for i in range(5)]

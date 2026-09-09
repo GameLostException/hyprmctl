@@ -5,15 +5,12 @@ All subprocess calls are mocked; no real hyprctl needed.
 
 import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
 
 from src.hypr import (
-    get_clients,
-    get_monitors,
     get_active_monitor,
     get_active_workspace_clients,
+    get_clients,
+    get_monitors,
 )
 
 # Load real-world fixtures
