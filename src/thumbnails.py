@@ -115,17 +115,57 @@ class ThumbnailCache:
             while len(self._order) > _CACHE_MAX:
                 self._cache.pop(self._order.pop(0), None)
 
-    def _all_clients(self) -> list[dict]:
-        """All visible, non-hidden clients across all workspaces."""
+    def warm(self, priority_addrs: list[str] | None = None) -> None:
+        """
+        Immediately capture a set of priority windows in a background thread.
+        Called when the overlay is about to open so the active WS is ready fast.
+        """
+        if not priority_addrs:
+            return
+        threading.Thread(
+            target=self._warm_batch, args=(priority_addrs,), daemon=True
+        ).start()
+
+    def _warm_batch(self, addrs: list[str]) -> None:
         try:
             r = subprocess.run(
                 ["hyprctl", "clients", "-j"],
                 capture_output=True, text=True, timeout=2.0,
             )
-            return [
+            all_clients = {c["address"]: c for c in json.loads(r.stdout)}
+        except Exception:
+            return
+        for addr in addrs:
+            if addr not in self._cache and addr in all_clients:
+                pb = _capture_now(all_clients[addr])
+                if pb is not None:
+                    self._store(addr, pb)
+
+    def _all_clients(self) -> list[dict]:
+        """
+        All visible, non-hidden clients across all workspaces.
+        Active workspace clients come first so they're captured earliest.
+        """
+        try:
+            r = subprocess.run(
+                ["hyprctl", "clients", "-j"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            all_clients = [
                 c for c in json.loads(r.stdout)
                 if not c.get("hidden") and c.get("size", [0, 0])[0] > 0
             ]
+            # Get active workspace id
+            r2 = subprocess.run(
+                ["hyprctl", "activeworkspace", "-j"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            active_ws_id = json.loads(r2.stdout).get("id", -1)
+            # Sort: active WS first, then rest
+            all_clients.sort(
+                key=lambda c: 0 if c.get("workspace", {}).get("id") == active_ws_id else 1
+            )
+            return all_clients
         except Exception:
             return []
 

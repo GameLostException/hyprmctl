@@ -324,32 +324,16 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             self._show_empty("No windows on this workspace")
             return
 
-        # Build thumbnail map from cache.
-        # For any client not yet cached, do a synchronous capture now
-        # (only safe for the currently active window — it's on top).
-        from src.thumbnails import _capture_now, get_cache
+        # Serve from cache immediately — no blocking capture.
+        # Kick off background warm() for any uncached windows so they appear
+        # next time the overlay is opened.
+        from src.thumbnails import get_cache
         cache = get_cache()
+        uncached = [c["address"] for c in clients if cache.get(c["address"]) is None]
+        if uncached:
+            cache.warm(uncached)
 
-        active_addr = ""
-        try:
-            import json as _json
-            import subprocess as _sp
-            aw = _json.loads(_sp.check_output(["hyprctl", "activewindow", "-j"]))
-            active_addr = aw.get("address", "")
-        except Exception:
-            pass
-
-        thumbnails: dict = {}
-        for c in clients:
-            addr = c["address"]
-            pb = cache.get(addr)
-            if pb is None and addr == active_addr:
-                # Active window is on top — safe to capture synchronously
-                pb = _capture_now(c)
-                if pb is not None:
-                    cache._store(addr, pb)
-            thumbnails[addr] = pb
-
+        thumbnails = {c["address"]: cache.get(c["address"]) for c in clients}
         tiles = compute_layout(clients, log_w, log_h, padding=52, gap=14)
         self._build_stacks(tiles, log_w, log_h, thumbnails)
 
