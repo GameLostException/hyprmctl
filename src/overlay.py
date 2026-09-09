@@ -10,7 +10,6 @@ Phase 3 additions:
 
 from __future__ import annotations
 
-import json
 import subprocess
 
 import gi
@@ -28,17 +27,25 @@ from src.tiles import TileWidget  # noqa: E402
 
 
 def _active_layout() -> str:
-    """Return the current Hyprland layout name for the active workspace."""
+    """
+    Return the current Hyprland layout name.
+
+    Uses 'hyprctl getoption general:layout' which reflects the runtime value
+    set by hawesome (e.g. 'monocle'). The tiledLayout field in activeworkspace
+    only reflects the tiling algorithm (dwindle/master), not runtime overrides.
+    """
     try:
         result = subprocess.run(
-            ["hyprctl", "activeworkspace", "-j"],
+            ["hyprctl", "getoption", "general:layout"],
             capture_output=True, text=True, check=True,
         )
-        ws = json.loads(result.stdout)
-        # tiledLayout reflects hawesome's general:layout setting
-        return ws.get("tiledLayout", "dwindle")
+        # Output format: "str: monocle\nset: true\n"
+        for line in result.stdout.splitlines():
+            if line.startswith("str:"):
+                return line.split(":", 1)[1].strip()
     except Exception:
-        return "dwindle"
+        pass
+    return "dwindle"
 
 
 _BASE_CSS = """

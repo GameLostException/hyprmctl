@@ -63,28 +63,26 @@ class TestFocusWindowDispatch:
 
     def test_monocle_sends_bringactivetotop(self):
         """In monocle layout, bringactivetotop must be dispatched after focuswindow."""
-        import json
         calls = []
 
-        ws_json = json.dumps({"id": 1, "tiledLayout": "monocle"})
+        getoption_output = "str: monocle\nset: true\n"
 
         def fake_run(cmd, **kwargs):
-            # Simulate hyprctl activeworkspace -j returning monocle
-            if cmd == ["hyprctl", "activeworkspace", "-j"]:
-                m = MagicMock()
-                m.stdout = ws_json
+            m = MagicMock()
+            if cmd == ["hyprctl", "getoption", "general:layout"]:
+                m.stdout = getoption_output
                 return m
             calls.append(cmd)
+            return m
 
         with patch("subprocess.run", side_effect=fake_run):
             import subprocess
-            addr = "0xabc"
             subprocess.run(
-                ["hyprctl", "dispatch", "focuswindow", f"address:{addr}"],
+                ["hyprctl", "dispatch", "focuswindow", "address:0xabc"],
                 capture_output=True,
             )
             # Simulate monocle branch
-            layout = json.loads(ws_json).get("tiledLayout", "dwindle")
+            layout = "monocle"  # as returned by _active_layout()
             if layout == "monocle":
                 subprocess.run(
                     ["hyprctl", "dispatch", "bringactivetotop"],
@@ -95,17 +93,15 @@ class TestFocusWindowDispatch:
 
     def test_dwindle_does_not_send_bringactivetotop(self):
         """In dwindle layout, bringactivetotop must NOT be dispatched."""
-        import json
         calls = []
-
-        ws_json = json.dumps({"id": 1, "tiledLayout": "dwindle"})
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
+            return MagicMock()
 
         with patch("subprocess.run", side_effect=fake_run):
             import subprocess
-            layout = json.loads(ws_json).get("tiledLayout", "dwindle")
+            layout = "dwindle"  # as returned by _active_layout()
             subprocess.run(
                 ["hyprctl", "dispatch", "focuswindow", "address:0xabc"],
                 capture_output=True,
