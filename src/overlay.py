@@ -67,7 +67,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         LayerShell.init_for_window(self)
         LayerShell.set_layer(self, LayerShell.Layer.OVERLAY)
         LayerShell.set_exclusive_zone(self, -1)
-        LayerShell.set_keyboard_mode(self, LayerShell.KeyboardMode.EXCLUSIVE)
+        LayerShell.set_keyboard_mode(self, LayerShell.KeyboardMode.ON_DEMAND)
         for edge in (LayerShell.Edge.TOP, LayerShell.Edge.BOTTOM,
                      LayerShell.Edge.LEFT, LayerShell.Edge.RIGHT):
             LayerShell.set_anchor(self, edge, True)
