@@ -112,9 +112,11 @@ class TileWidget(Gtk.Overlay):
         app_class: str,
         title: str,
     ) -> None:
-        # Screenshot fills the whole tile
+        # Gtk.Picture with can_shrink=True scales to fit allocated size.
+        # ContentFit.COVER fills without letterboxing (crops if needed).
         img = Gtk.Picture.new_for_pixbuf(pixbuf)
-        img.set_content_fit(Gtk.ContentFit.FILL)
+        img.set_can_shrink(True)
+        img.set_content_fit(Gtk.ContentFit.COVER)
         img.set_hexpand(True)
         img.set_vexpand(True)
         self.set_child(img)
