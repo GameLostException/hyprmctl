@@ -4,13 +4,21 @@ hyprmctl — Mission Control for Hyprland
 Phase 1: Overlay shell — full-screen dimmed overlay, closes on Escape or click outside.
 """
 
+import os
 import sys
+
+# gtk4-layer-shell must be preloaded before libwayland-client.
+# If not already set, re-exec this script with LD_PRELOAD injected.
+_LAYER_SHELL_SO = "/usr/lib/libgtk4-layer-shell.so"
+if os.path.exists(_LAYER_SHELL_SO) and _LAYER_SHELL_SO not in os.environ.get("LD_PRELOAD", ""):
+    os.environ["LD_PRELOAD"] = _LAYER_SHELL_SO
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 import gi
 
 gi.require_version("Gtk", "4.0")
-gi.require_version("GtkLayerShell", "0.1")
+gi.require_version("Gtk4LayerShell", "1.0")
 
-from gi.repository import Gtk, Gdk, GtkLayerShell, GLib
+from gi.repository import Gtk, Gdk, Gtk4LayerShell as GtkLayerShell, GLib
 
 
 class MissionControlOverlay(Gtk.ApplicationWindow):
