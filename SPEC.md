@@ -167,16 +167,36 @@ Include all window types in the overlay:
 - On close/click: restore each window's exact state
 - Visual distinction: floating tiles get dashed border; fullscreen get a badge
 
-### Phase 6 — Live thumbnails 🔲
+### Phase 6 — Thumbnails ✅
 
-Replace colour-fill tiles with `grim -g` window screenshots:
+**Architecture: event-driven + rolling refresh daemon**
 
-**`src/thumbnails.py`**:
-- `capture_window(client)` → `grim -g "x,y wxh" /tmp/hyprmctl-{addr}.png` → `GdkPixbuf`
-- `capture_all(clients)` → `ThreadPoolExecutor(max_workers=4)`
-- 500ms timeout → fallback to colour fill silently
+`ThumbnailCache` runs as a background thread inside the persistent daemon:
 
-Refresh loop: re-capture every 2s while overlay is open.
+1. **`openwindow` event** — Hyprland socket2 fires `openwindow>>addr,ws,class,title`
+   when a new window is created. The cache captures it immediately in a worker thread.
+
+2. **Rolling refresh** — cycles through all visible windows (active WS first), one
+   capture per `_ROLL_INTERVAL` (0.5s sleep + ~0.6s grim = ~1.1s per window).
+   With 20 windows, full cycle ≈ 22s. Active WS windows are prioritised so they
+   appear in the first ~10s.
+
+3. **`openwindow` + rolling** means: in normal use (daemon running since login),
+   every window the user has ever opened or looked at is captured.
+
+**Capture**: `grim -g "x,y WxH" -` → stdout → `GdkPixbuf.PixbufLoader` → downscaled
+to 800×500 max. Entirely in RAM, no disk writes.
+
+**Overlay open**: serves from cache instantly. Uncached windows show colour-fill tile.
+`warm()` queues uncached windows for background capture (ready next open).
+
+**Rendering**: `pixbuf.scale_simple(tile_w, tile_h-28, BILINEAR)` → `Gdk.Texture`
+→ `Gtk.Picture(can_shrink=False)`. Pre-scaling is required — GTK4.14+ deprecated
+`Gtk.Image.new_from_pixbuf` and `ContentFit` doesn't render in `Gtk.Fixed`.
+
+**Note on test restarts**: killing and immediately restarting the daemon produces
+empty cache on first open. This is expected and only happens during development.
+In production (daemon running since login), cache is always warm.
 
 ### Phase 7 — Fly-in / fly-back animation 🔲
 

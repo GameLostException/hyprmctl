@@ -16,6 +16,8 @@ Effective CPU: one screencopy call per ~1.1s (0.5s sleep + 0.6s grim).
 from __future__ import annotations
 
 import json
+import os
+import socket
 import subprocess
 import threading
 from typing import Any
@@ -171,31 +173,110 @@ class ThumbnailCache:
 
     def _roll(self) -> None:
         """
-        Main loop: capture one window per iteration, cycling through all clients.
-        Client list refreshed at the start of each full cycle.
+        Main loop: two concurrent tasks in one thread:
+        1. Subscribe to Hyprland openwindow events → capture new windows immediately
+        2. Rolling refresh — cycle through all windows, one per _ROLL_INTERVAL
+
+        Both run in the same thread to keep the implementation simple.
+        The socket uses a 1s timeout so the roll tick fires regularly.
         """
+        instance = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")
+        uid = os.getuid()
+        sock_dir = f"/run/user/{uid}/hypr"
+
+        if not instance:
+            try:
+                entries = [e for e in os.listdir(sock_dir)
+                           if not e.endswith(".log") and not e.endswith(".log.old")]
+                if entries:
+                    instance = sorted(entries)[-1]
+            except OSError:
+                pass
+
+        sock_path = f"{sock_dir}/{instance}/.socket2.sock" if instance else ""
+
+        # Rolling state
         clients: list[dict] = []
         idx = 0
+        last_roll = 0.0
+
+        import time
+
+        def try_connect():
+            if not sock_path:
+                return None
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(1.0)
+                s.connect(sock_path)
+                return s
+            except Exception:
+                return None
+
+        sock = try_connect()
+        buf = ""
 
         while not self._stop.is_set():
-            # Refresh list at start of each cycle
-            if idx >= len(clients):
-                clients = self._all_clients()
-                idx = 0
-                if not clients:
-                    self._stop.wait(timeout=2.0)
-                    continue
+            # ── Event handling ──────────────────────────────────────────────
+            if sock is not None:
+                try:
+                    data = sock.recv(4096).decode("utf-8", errors="replace")
+                    buf += data
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        self._handle_event(line.strip())
+                except TimeoutError:
+                    pass
+                except Exception:
+                    sock = None  # reconnect next iteration
 
-            client = clients[idx]
-            idx += 1
+            # ── Rolling capture tick ─────────────────────────────────────────
+            now = time.monotonic()
+            if now - last_roll >= _ROLL_INTERVAL:
+                last_roll = now
+                if idx >= len(clients):
+                    clients = self._all_clients()
+                    idx = 0
+                if clients:
+                    pb = _capture_now(clients[idx])
+                    if pb is not None:
+                        self._store(clients[idx]["address"], pb)
+                    idx += 1
 
-            pb = _capture_now(client)
-            if pb is not None:
-                self._store(client["address"], pb)
+        if sock:
+            sock.close()
 
-            # Natural throttle: sleep between captures
-            # Effective per-window interval ≈ _ROLL_INTERVAL + capture_duration (~0.6s)
-            self._stop.wait(timeout=_ROLL_INTERVAL)
+    def _handle_event(self, line: str) -> None:
+        """Handle Hyprland socket2 events."""
+        if ">>" not in line:
+            return
+        event, _, payload = line.partition(">>")
+
+        if event == "openwindow":
+            # openwindow>>addr,ws,class,title — capture new window immediately
+            addr = f"0x{payload.split(',')[0]}" if payload else ""
+            if addr:
+                threading.Thread(
+                    target=self._capture_addr, args=(addr,), daemon=True
+                ).start()
+
+    def _capture_addr(self, address: str) -> None:
+        """Fetch client by address and capture it."""
+        try:
+            r = subprocess.run(
+                ["hyprctl", "clients", "-j"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            client = next(
+                (c for c in json.loads(r.stdout) if c.get("address") == address),
+                None,
+            )
+            if client:
+                pb = _capture_now(client)
+                if pb is not None:
+                    self._store(address, pb)
+        except Exception:
+            pass
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
