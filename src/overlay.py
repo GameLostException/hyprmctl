@@ -11,6 +11,7 @@ Phase 3 additions:
 from __future__ import annotations
 
 import subprocess
+import threading
 
 import gi
 
@@ -18,7 +19,7 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gtk4LayerShell", "1.0")
 
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, Gtk  # noqa: E402
 from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
 
 from src.hypr import get_active_monitor, get_active_workspace_clients  # noqa: E402
@@ -206,15 +207,20 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
     # ── Event handlers ───────────────────────────────────────────────────────
 
     def _on_tile_click(self, address: str) -> None:
-        # Close the overlay first, then dispatch focus.
-        # If we dispatch before closing, Hyprland re-focuses the previously
-        # active window when our surface is destroyed (this clobbers monocle).
+        # We must close the overlay first, otherwise Hyprland re-focuses the
+        # previously active window when our surface is destroyed, clobbering
+        # the focuswindow dispatch (critical in monocle layout).
+        #
+        # GLib.timeout_add won't fire after the last window closes (main loop
+        # exits), so we use a background thread that sleeps briefly then
+        # dispatches — the thread outlives the GTK main loop.
+        threading.Thread(target=self._deferred_focus, args=(address,), daemon=True).start()
         self.close()
-        # Small delay to let the compositor process the surface destruction
-        # before we issue the focuswindow dispatch.
-        GLib.timeout_add(80, self._dispatch_focus, address)
 
-    def _dispatch_focus(self, address: str) -> bool:
+    def _deferred_focus(self, address: str) -> None:
+        """Sleep briefly to let surface destruction settle, then dispatch focus."""
+        import time
+        time.sleep(0.12)
         subprocess.run(
             ["hyprctl", "--batch",
              f"keyword cursor:no_warps true ; "
@@ -222,7 +228,6 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
              f"keyword cursor:no_warps false"],
             capture_output=True,
         )
-        return False  # don't repeat
 
     def _on_bg_click(self, gesture, n_press, x, y) -> None:
         widget = self.pick(x, y, Gtk.PickFlags.DEFAULT)
