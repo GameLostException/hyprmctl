@@ -1,307 +1,258 @@
-# hyprmctl — Project Specification
+# hyprmctl — Technical Specification
 
 **Mission Control for Hyprland**
-Standalone GTK4 overlay showing all open windows as tiles, grouped by app.
-Click to focus. No Hyprland plugin API — survives compositor updates.
+Standalone GTK4 overlay. No Hyprland plugin API — uses only stable public interfaces.
 
 ---
 
 ## Principles
 
-- **Standalone**: only stable public interfaces (`hyprctl`, `grim`, `gtk4-layer-shell`)
-- **Branch per phase**: each phase is developed on `phase/N-name`, merged to `main` before next
-- **Tests first**: every module has a companion test file; CI runs on every push
-- **No live window capture until Phase 5**: tiles are icon + title, not live content
+- **Standalone** — only `hyprctl`, `grim`, `gtk4-layer-shell`; survives compositor updates
+- **Branch per phase** — `phase/N-name` → CI → merge to `main`
+- **Tests first** — every module has a companion test file; CI on every push
+- **Pure layout engine** — `layout.py` has zero GTK imports; fully unit-testable
 
 ---
 
-## Repository Layout
+## Repository layout
 
 ```
 hyprmctl/
-├── hyprmctl.py          # entry point (thin launcher)
+├── hyprmctl.py                  # entry point (LD_PRELOAD re-exec + Gtk.Application)
 ├── src/
-│   ├── __init__.py
-│   ├── app.py           # Gtk.Application subclass
-│   ├── overlay.py       # MissionControlOverlay window + layer shell
-│   ├── layout.py        # tile geometry calculation (pure, no GTK)
-│   ├── hypr.py          # hyprctl data fetching + parsing
-│   ├── icons.py         # .desktop file / icon theme lookup
-│   ├── tiles.py         # GTK tile widgets
-│   └── thumbnails.py    # grim screenshot capture (Phase 5)
+│   ├── app.py                   # Gtk.Application subclass
+│   ├── overlay.py               # MissionControlOverlay + Stack explosion system
+│   ├── layout.py                # squarified treemap + fan geometry (pure)
+│   ├── hypr.py                  # hyprctl IPC wrappers
+│   ├── icons.py                 # GTK IconTheme + .desktop index
+│   └── tiles.py                 # TileWidget (icon + class + title + HSL colour)
 ├── tests/
-│   ├── __init__.py
-│   ├── test_layout.py
+│   ├── fixtures/
+│   │   ├── clients.json         # real hyprctl clients -j output
+│   │   └── monitors.json        # real hyprctl monitors -j output
 │   ├── test_hypr.py
 │   ├── test_icons.py
+│   ├── test_interaction.py
+│   ├── test_layout.py
 │   └── test_tiles.py
-├── .github/
-│   └── workflows/
-│       └── ci.yml       # lint + test on every push / PR
-├── SPEC.md              # this file
-├── README.md
-├── .gitignore
+├── .github/workflows/ci.yml
+├── pytest.ini
+├── ruff.toml
 └── requirements-dev.txt
 ```
 
 ---
 
-## Phases
+## Completed phases
 
-### Phase 1 — Overlay shell ✅ (branch: `phase/1-overlay-shell`)
+### Phase 1 — Overlay shell ✅
 
-**Goal**: Full-screen dimmed overlay that opens and closes correctly.
+GTK4 window via `Gtk4LayerShell` at OVERLAY layer, all edges anchored, full-screen.
+Semi-transparent black background. `KeyboardMode.ON_DEMAND` (not EXCLUSIVE — see note).
+Closes on Escape or background click.
 
-**Deliverables**:
-- GTK4 window via `gtk4-layer-shell` at OVERLAY layer, full-screen, all edges anchored
-- Semi-transparent black background (`rgba(0,0,0,0.75)`)
-- Keyboard exclusive mode (captures all keys while open)
-- Closes on Escape or click on background
-- Placeholder label (removed in Phase 2)
-- Entry point: `python3 hyprmctl.py`
-- Hyprland keybind: `SUPER+SPACE` → `hyprctl dispatch exec hyprmctl`
+**Critical note — KeyboardMode**: `EXCLUSIVE` causes Hyprland to save the previously
+focused window and restore it on surface destruction. This clobbers any `focuswindow`
+dispatch, breaking monocle layout. `ON_DEMAND` avoids this.
 
-**Tests**:
-- `test_overlay.py`: instantiation smoke test (headless via `GDK_BACKEND=offscreen`)
-- `test_css.py`: CSS provider loads without error
-
-**Definition of done**: overlay opens, dims screen, closes on Escape and click.
+**Critical note — LD_PRELOAD**: `gtk4-layer-shell` must be loaded before
+`libwayland-client`. `hyprmctl.py` detects the missing preload and re-execs itself
+with `LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so`.
 
 ---
 
-### Phase 2 — Window data + grid layout (branch: `phase/2-layout`)
-
-**Goal**: Parse live window data, compute tile geometry, render placeholder tiles.
-
-**Deliverables**:
+### Phase 2 — Window tiles ✅
 
 **`src/hypr.py`**:
-- `get_clients() -> list[dict]` — calls `hyprctl clients -j`, returns parsed JSON
-- `get_monitors() -> list[dict]` — calls `hyprctl monitors -j`
-- `get_active_monitor() -> dict` — returns the monitor where the focused workspace lives
-- Filters clients to active monitor + active workspace only
-- Handles empty workspace gracefully
-
-**`src/layout.py`** (pure functions, no GTK, fully testable):
-- `compute_layout(clients, monitor_w, monitor_h, padding, gap) -> list[TileGeometry]`
-- `TileGeometry`: dataclass with `x, y, w, h, client` fields
-- Algorithm: pack clients into rows, scale each to fit preserving aspect ratio, then
-  group by `class` (same app class = adjacent tiles), sort groups by window count desc
-- `group_by_class(clients) -> dict[str, list[dict]]` — groups clients by `wm_class`
-- Target: tiles use ~80% of screen area, padding 40px from edges, 12px gap between tiles
+- `get_clients(runner)` / `get_monitors(runner)` — injectable runner for testing
+- `get_active_monitor()` — monitor with `focused: true`
+- `get_active_workspace_clients()` — filters to active ws, excludes hidden
 
 **`src/tiles.py`**:
-- `TileWidget(Gtk.Frame)` — displays app class name + window title in a colored box
-- Color derived from app class string hash → hue → HSL → CSS rgba
-- Hover state: subtle brightness increase via CSS class
+- `TileWidget(Gtk.Box)` — icon + app class label + title
+- Per-app HSL colour: `_class_to_hue(app_class)` → deterministic hue → CSS rgba
+- `set_focused(bool)` — toggles `.tile-focused` CSS class (white border ring)
 
-**`src/overlay.py`** refactored:
-- Removes placeholder label
-- On `present()`: fetches clients, computes layout, instantiates `TileWidget` for each
-- Uses `Gtk.Fixed` as layout container (absolute positioning matches computed geometry)
-
-**Tests**:
-- `test_hypr.py`: mocks `subprocess.run`, asserts parsing of sample JSON fixtures
-- `test_layout.py`: grid computation with known inputs → assert tile positions/sizes
-- `test_tiles.py`: widget instantiation with mock client data
-
-**Fixtures**: `tests/fixtures/clients.json`, `tests/fixtures/monitors.json`
-(real `hyprctl` output, committed to repo)
-
-**Definition of done**: overlay shows a colored tile per window, correctly grouped by app.
+**`src/icons.py`**:
+- `resolve_icon_name(app_class)` — GTK `IconTheme.has_icon()` lookup
+- Candidate chain: direct class name → `.desktop` Icon= field → generic fallbacks
+- `_build_desktop_index()` — `@lru_cache` scan of `/usr/share/applications/*.desktop`
 
 ---
 
-### Phase 3 — Interaction (branch: `phase/3-interaction`)
-
-**Goal**: Click a tile to focus the window; keyboard navigation.
-
-**Deliverables**:
+### Phase 3 — Interaction ✅
 
 **Click-to-focus**:
-- `TileWidget` gets a `Gtk.GestureClick` controller
-- On click: run `hyprctl dispatch focuswindow address:0x{addr}`, then close overlay
-- Background click still closes without focusing (existing behavior)
+```python
+hyprctl --batch "dispatch movecursor {cx} {cy} ; dispatch focuswindow address:{addr}"
+```
+`movecursor` is required because `follow_mouse=1` refocuses whatever is under the cursor
+when the overlay surface is destroyed. Warping first ensures the right window is under
+the cursor at destroy time.
 
-**Hover highlight**:
-- CSS: `.tile:hover { background-color: rgba(255,255,255,0.12); }`
-- Scale-up on hover: CSS `transition: all 0.1s ease` (GTK4 CSS transitions)
-
-**Keyboard navigation**:
-- Arrow keys move focus between tiles (logical order: left→right, top→bottom)
-- `Enter` / `Return` → focus selected window + close
-- `Escape` → close without focusing
-- Focused tile gets `.tile-focused` CSS class (visible ring)
-
-**Group label**:
-- Above each app group: small `Gtk.Label` with app class name, muted color
-
-**Tests**:
-- `test_interaction.py`: mock `subprocess.run`, assert correct `hyprctl dispatch` call
-- Keyboard nav: simulate key events, assert focused tile index changes correctly
-
-**Definition of done**: click or keyboard nav focuses correct window, overlay closes cleanly.
+**Keyboard navigation**: arrow keys / hjkl cycle `_tiles` list, Enter calls
+`_on_tile_click`, Escape closes.
 
 ---
 
-### Phase 4 — Polish (branch: `phase/4-polish`)
+### Phase 4 — Polish ✅
 
-**Goal**: Animations, app icons, visual grouping, multi-monitor support.
-
-**Deliverables**:
-
-**App icons** (`src/icons.py`):
-- `find_icon(app_class) -> str | None` — searches `/usr/share/applications/*.desktop`
-  for `Icon=` matching app class (case-insensitive), resolves via GTK icon theme
-- `get_icon_pixbuf(app_class, size) -> GdkPixbuf | None`
-- `TileWidget` shows icon (48×48) above title if available, falls back to initials
-
-**Open animation**:
-- Tiles start at `opacity=0, scale=0.85`, animate to `opacity=1, scale=1.0` over 150ms
-- Staggered: each tile delayed by `index * 15ms`
-- Implemented via `Gtk.Widget.set_opacity` + CSS transition or GLib timeout chain
-
-**Close animation**:
-- Reverse: fade + scale-down over 100ms, then `self.close()` after animation completes
-
-**Visual grouping**:
-- Semi-transparent rounded rect behind each app group (drawn via CSS `background-color`)
-- `Gtk.Frame` or overlay `Gtk.Box` per group, positioned by layout engine
-
-**Multi-monitor**:
-- `overlay.py`: detect focused monitor at open time via `get_active_monitor()`
-- Pass monitor name to `GtkLayerShell.set_monitor()` → overlay on correct screen only
-- Layout engine receives that monitor's geometry
-
-**Tests**:
-- `test_icons.py`: mock `.desktop` parsing, assert icon resolution
-- `test_layout.py`: add multi-monitor fixture, assert layout respects monitor bounds
-
-**Definition of done**: overlay looks polished, icons show, animations play, correct monitor.
+- **App icons**: `Gtk.Image.new_from_icon_name()` at 32px, initials fallback
+- **Staggered fade-in**: `.tile-animate` (opacity 0) → `.tile-animate-in` (opacity 1)
+  via CSS transition, `GLib.timeout_add(20 + i*15ms)`
+- **Multi-monitor**: `LayerShell.set_monitor()` on the active monitor's `GdkMonitor`
 
 ---
 
-### Phase 5 — Live thumbnails (branch: `phase/5-thumbnails`)
+### Phase 5.1 — Stack layout ✅
 
-**Goal**: Replace solid-color tiles with `grim` window screenshots.
+**Layout algorithm** (`src/layout.py`):
 
-**Deliverables**:
+1. `group_by_class(clients)` → groups sorted by size descending
+2. `_squarify(n, w, h)` → divide screen into n equal-area near-square cells
+3. `_place_stack(group, cell, ...)` → fan windows within cell:
+   - Hero (largest window) fills `HERO_FILL=0.78` of cell
+   - Each window behind hero offset by `FAN_STEP_X=10, FAN_STEP_Y=8`
+   - All windows scaled by same factor (preserves relative sizes)
+
+**Explosion system** (`src/overlay.py`):
+
+```
+Stack
+  .widgets[]          TileWidget list (hero last = highest z-order)
+  .icon_widget        Gtk.Image at cell center (always visible)
+  .collapsed_pos[]    (orig_x, orig_y) per widget
+  .exploded_pos[]     computed from _explosion_arc + _explosion_positions
+  ._hover_count       widgets currently under cursor (prevents flicker)
+  ._collapse_id       pending GLib source for debounced collapse
+  ._anim_id           running animation source
+  ._cur_x, _cur_y     current animated position (enables mid-anim reversal)
+```
+
+**Arc direction** (`_explosion_arc`):
+- Determines available screen space from cell center `rel_x, rel_y`
+- Corners → 90° arc; edges → 180° arc; center → 360°
+- Explosion goes AWAY from nearest edge:
+  - Top-left → SE (0°, span 90°)
+  - Top-right → SW (90°, span 90°)
+  - Bottom-left → NE (−90°, span 90°)
+  - Bottom-right → NW (180°, span 90°)
+  - Top edge → downward (0°, span 180°)
+  - Bottom edge → upward (−180°, span 180°)
+
+**Animation** (`_animate_stack`):
+- 60fps via `GLib.timeout_add(16, tick)`
+- 220ms duration, ease-out-cubic explode / ease-in-cubic collapse
+- `from_pos` = `_cur_x/_cur_y` → smooth mid-animation reversal
+- One stack exploded at a time; entering a new stack collapses the previous
+
+**Hover guard** (`_on_stack_enter / _on_stack_leave`):
+- `_hover_count` incremented on enter, decremented on leave
+- Collapse only fires when `_hover_count == 0` after 200ms debounce
+- Prevents flicker when cursor moves between icon and tiles within same stack
+
+**`_built` guard on `_on_mapped`**:
+- Layer-shell `map` signal can fire multiple times
+- Boolean flag ensures stacks are built exactly once
+
+---
+
+## Planned phases
+
+### Phase 5.2 — Window state completeness 🔲
+
+Include all window types in the overlay:
+- Floating, maximized, fullscreen, pinned, special/minimized workspace
+- Capture full state at open time (`floating`, `fullscreen`, `pinned`, `at`, `size`)
+- On close/click: restore each window's exact state
+- Visual distinction: floating tiles get dashed border; fullscreen get a badge
+
+### Phase 6 — Live thumbnails 🔲
+
+Replace colour-fill tiles with `grim -g` window screenshots:
 
 **`src/thumbnails.py`**:
-- `capture_window(client) -> GdkPixbuf | None`
-  - Computes crop rect from `at` (x,y) + `size` (w,h) fields in `hyprctl clients` output
-  - Runs: `grim -g "x,y wxh" /tmp/hyprmctl-{addr}.png`
-  - Loads result as `GdkPixbuf`, returns `None` on failure
-- `capture_all(clients) -> dict[str, GdkPixbuf]` — parallel capture via `ThreadPoolExecutor`
-  (max 4 workers to avoid hammering screencopy)
+- `capture_window(client)` → `grim -g "x,y wxh" /tmp/hyprmctl-{addr}.png` → `GdkPixbuf`
+- `capture_all(clients)` → `ThreadPoolExecutor(max_workers=4)`
+- 500ms timeout → fallback to colour fill silently
 
-**Integration**:
-- `overlay.py` calls `capture_all()` before building tile widgets
-- `TileWidget` accepts optional `pixbuf` param; if set, shows scaled screenshot instead
-  of color fill; icon + title overlaid as semi-transparent bottom bar
+Refresh loop: re-capture every 2s while overlay is open.
 
-**Performance guard**:
-- If capture takes > 500ms, fall back to color tiles silently
+### Phase 7 — Fly-in / fly-back animation 🔲
 
-**Tests**:
-- `test_thumbnails.py`: mock `subprocess.run` + file I/O, assert pixbuf returned on success,
-  `None` returned on `grim` failure
+**Requires Phase 6** (animating colour boxes is pointless).
 
-**Definition of done**: tiles show window screenshots at overlay open time.
+**Fly-in**: each tile starts at its window's real screen coordinates and size,
+animates to its stack position over 250ms via frame-by-frame `Gtk.Fixed.move()`.
+
+**Fly-back** (on click): reverse — all tiles animate from current position back
+to real window positions, overlay closes after animation completes (not before).
 
 ---
 
-## Test Harness
+## Test harness
 
-### Framework
-- `pytest` — test runner
-- `unittest.mock` — mock `subprocess.run`, GTK calls, file I/O
-- `pytest-cov` — coverage reporting
-- Headless GTK: `GDK_BACKEND=offscreen` env var (set in CI, optional locally)
-
-### Running tests locally
 ```bash
-cd ~/Lab/hyprmctl
 GDK_BACKEND=offscreen python3 -m pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
-### Coverage targets
-| Module          | Target |
-|-----------------|--------|
-| `hypr.py`       | 90%    |
-| `layout.py`     | 95%    |
-| `icons.py`      | 80%    |
-| `tiles.py`      | 75%    |
-| `thumbnails.py` | 80%    |
-| `overlay.py`    | 60%    |
+| Module | Coverage |
+|--------|---------|
+| `hypr.py` | 90% |
+| `layout.py` | 95% |
+| `icons.py` | 85% |
+| `tiles.py` | 75% |
+| `overlay.py` | headless-only (GTK widget tests require live Wayland) |
+
+GTK widget tests (`TileWidget`, `MissionControlOverlay`) require a live Wayland display
+and are skipped in CI (`GDK_BACKEND=offscreen`). They are tested manually via live launch.
 
 ---
 
-## CI Pipeline (GitHub Actions)
+## CI pipeline
 
-File: `.github/workflows/ci.yml`
+`.github/workflows/ci.yml` — triggers on push to any branch, PR to `main`.
 
-Triggers: push to any branch, pull request to `main`.
-
-Jobs:
 1. **lint** — `ruff check src/ tests/`
-2. **test** — `GDK_BACKEND=offscreen pytest tests/ --cov=src --cov-report=xml`
-3. **coverage-comment** — posts coverage diff as PR comment (via `coverage-comment` action)
-
-Python version: `3.11` (minimum; tested against `3.12` too).
-
-System packages needed in CI: `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-gtklayershell-0.1`
-(Ubuntu runner: install via `apt`, or use `conda-forge` if not available).
+2. **test** — `GDK_BACKEND=offscreen pytest tests/ --cov=src` on Python 3.11 + 3.12
+3. Coverage XML artifact uploaded per run
 
 ---
 
-## Git Workflow
+## Git workflow
 
 ```
-main
- └── phase/1-overlay-shell   ← merged ✅
- └── phase/2-layout          ← current
- └── phase/3-interaction
- └── phase/4-polish
- └── phase/5-thumbnails
+main  (default, protected)
+  phase/1-overlay-shell   ✅ merged
+  phase/2-layout          ✅ merged
+  phase/3-interaction     ✅ merged
+  phase/4-polish          ✅ merged
+  phase/5.2-window-state  (next)
+  phase/6-thumbnails
+  phase/7-fly-animation
 ```
 
-- One branch per phase
-- Squash-merge or regular merge to `main` when phase passes CI
-- Commit convention: `type(scope): message`
-  - `feat(overlay): add layer shell init`
-  - `test(layout): add grid computation tests`
-  - `fix(hypr): handle empty workspace`
-  - `docs: update README for phase 2`
+Commit convention: `type(scope): message`
+Types: `feat`, `fix`, `test`, `docs`, `refactor`, `chore`
 
 ---
 
 ## Dependencies
 
 ### Runtime
-- Python ≥ 3.11
-- `python3-gi` (PyGObject)
-- GTK 4 (`gir1.2-gtk-4.0` / `python-gobject`)
-- `gtk4-layer-shell` + GIR (`gir1.2-gtklayershell-0.1`)
-- `grim` (Phase 5 only)
 
-### Dev / CI
+| Package | Version | Notes |
+|---------|---------|-------|
+| Python | ≥ 3.11 | |
+| `python-gobject` | system | PyGObject / GI |
+| `gtk4` | system | GTK4 toolkit |
+| `gtk4-layer-shell` | system | includes `Gtk4LayerShell-1.0` GIR |
+| `grim` | system | Phase 6+ only |
+
+### Dev
+
 ```
 pytest>=8.0
 pytest-cov>=5.0
 ruff>=0.4
 ```
-
-File: `requirements-dev.txt`
-
----
-
-## Acceptance Criteria Summary
-
-| Phase | AC |
-|-------|----|
-| 1 | Overlay opens full-screen, dims bg, closes on Escape/click |
-| 2 | Tiles visible for each window on active workspace, grouped by app |
-| 3 | Click tile → window focused, overlay closed; keyboard nav works |
-| 4 | Icons shown, open/close animation plays, correct monitor |
-| 5 | Tiles show grim screenshots, fallback to color on failure |

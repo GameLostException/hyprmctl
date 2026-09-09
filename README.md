@@ -1,72 +1,148 @@
 # hyprmctl
 
-Mission Control for Hyprland. Shows all open windows as live thumbnails in a
-full-screen overlay, grouped by app. Click to focus.
+Mission Control for Hyprland — macOS-style window overview as a full-screen overlay.
+
+Windows are grouped into stacks by app. Each stack explodes outward on hover,
+revealing all windows individually. Click any window to focus it.
+
+![status](https://github.com/GameLostException/hyprmctl/actions/workflows/ci.yml/badge.svg)
+
+---
+
+## Features
+
+- **Stack-based layout** — each app class occupies an equal-area cell (squarified treemap)
+- **Fanned stacks** — multiple windows of the same app fan slightly so the group is visible
+- **Radial explosion on hover** — windows animate outward from the app icon into available
+  screen space; direction driven by cell position (corner → 90°, edge → 180°, center → 360°)
+- **App icons** — resolved from GTK icon theme + `.desktop` files, initials fallback
+- **Click to focus** — works in all Hyprland layouts including monocle
+- **Keyboard navigation** — arrow keys / hjkl, Enter to focus, Escape to close
+- **Multi-monitor** — overlay pins to the active monitor
+- **No Hyprland plugin API** — uses only stable public interfaces; survives compositor updates
+
+---
+
+## Usage
+
+### Trigger
+
+```
+SUPER+SPACE
+```
+
+Configured in `~/.config/hypr/hyprland.conf`:
+
+```
+bind = $mod, SPACE, exec, python3 /home/boris/Lab/hyprmctl/hyprmctl.py
+```
+
+### Controls
+
+| Action | Keys / Mouse |
+|--------|-------------|
+| Open | `SUPER+SPACE` |
+| Focus window | Click tile, or `Enter` |
+| Navigate | Arrow keys / `hjkl` |
+| Close without focusing | `Escape` or click background |
+| Expand stack | Hover over any tile in the stack |
+| Collapse stack | Move cursor away (200ms debounce) |
+
+---
 
 ## Architecture
 
-- **Capture:** `grim` (wlr-screencopy) — per-window screenshot crops
-- **Overlay:** GTK4 + `gtk4-layer-shell` — proper Wayland layer surface
-- **Data:** `hyprctl clients -j` / `hyprctl monitors -j`
-- **Focus:** `hyprctl dispatch focuswindow address:X`
-- **Trigger:** keybind → `hyprctl dispatch exec hyprmctl`
+```
+hyprmctl.py          ← entry point; re-execs with LD_PRELOAD for gtk4-layer-shell
+src/
+  app.py             ← Gtk.Application subclass
+  overlay.py         ← MissionControlOverlay: layer-shell window, stack management,
+                        explosion animation, hover/focus logic
+  layout.py          ← pure geometry: squarified treemap → fanned stacks
+  hypr.py            ← hyprctl IPC: clients, monitors, active workspace
+  icons.py           ← GTK IconTheme + .desktop index → icon name resolution
+  tiles.py           ← TileWidget: icon + app class + title, per-app HSL colour
+tests/
+  test_hypr.py
+  test_icons.py
+  test_interaction.py
+  test_layout.py
+  test_tiles.py
+  fixtures/
+    clients.json     ← real hyprctl output
+    monitors.json
+.github/workflows/
+  ci.yml             ← lint (ruff) + test (pytest) on Python 3.11 & 3.12
+```
 
-## No Hyprland plugin API
+### Key design decisions
 
-Unlike hyprview, hyprmctl does NOT use the Hyprland plugin system.
-It runs as a standalone process using only stable public interfaces.
-This means it survives Hyprland updates.
+**gtk4-layer-shell preload** — the library must be loaded before `libwayland-client`.
+`hyprmctl.py` detects the missing preload and re-execs itself via `os.execv` with
+`LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so` set.
 
-## Vision
+**KeyboardMode.ON_DEMAND** — using `EXCLUSIVE` causes Hyprland to save the previously
+focused window and restore it on surface destruction, clobbering any `focuswindow`
+dispatch. `ON_DEMAND` avoids this; keyboard events (Escape, arrows, Enter) still work.
 
-Exactly what macOS Mission Control does:
-- All windows spread across the screen, floating over a dimmed background
-- Scaled down to fit, preserving aspect ratios
-- Grouped by app (windows of the same app cluster together)
-- Click a window → it becomes focused, overlay closes
-- Scoped to the active workspace + active monitor
+**Focus + movecursor** — `follow_mouse=1` refocuses whatever window is under the cursor
+when a surface is destroyed. We dispatch `movecursor <cx> <cy>` to the target window
+center before `focuswindow`, so the cursor is already over the right window when the
+overlay closes.
 
-No live window content needed — each "thumbnail" shows:
-- The app icon (from .desktop file)
-- The window title
-- A coloured border matching the app (like a group indicator)
+**_built guard on `_on_mapped`** — the layer-shell `map` signal can fire multiple times.
+A boolean guard ensures stacks are only built once.
 
-## Incremental Build Plan
+**Stack hover with _hover_count** — each stack tracks how many of its widgets are under
+the cursor. Moving between icon and tiles within the same stack never triggers a collapse.
+A 200ms debounce handles brief cursor gaps.
 
-### Phase 1 — Overlay shell (no content yet)
-- [ ] GTK4 window with `gtk4-layer-shell` at overlay layer, full screen
-- [ ] Dims the background (semi-transparent black overlay)
-- [ ] Closes on Escape or click outside
-- [ ] Triggered via `hyprctl dispatch exec hyprmctl`
-- [ ] Hyprland keybind: `SUPER+SPACE`
+---
 
-### Phase 2 — Window data + layout
-- [ ] Fetch windows for active workspace + active monitor via `hyprctl clients -j`
-- [ ] Fetch monitor geometry via `hyprctl monitors -j`
-- [ ] Implement grid layout that spreads windows preserving aspect ratios
-- [ ] Group windows by app class (same class = same group, visually adjacent)
-- [ ] Each tile shows: app icon + window title (no live content)
-- [ ] App icon lookup from `.desktop` files / icon theme
+## Dependencies
 
-### Phase 3 — Interaction
-- [ ] Click a tile → `hyprctl dispatch focuswindow address:X` → close overlay
-- [ ] Hover highlight
-- [ ] Keyboard navigation (arrow keys between tiles, Enter to focus, Escape to close)
-- [ ] Show group label (app name) above each cluster
+### Runtime (system packages)
 
-### Phase 4 — Polish
-- [ ] Scale-in animation when overlay opens
-- [ ] Scale-out animation when closing
-- [ ] Smooth tile positioning
-- [ ] App grouping visual: subtle background behind each app's tiles
-- [ ] Multi-monitor: separate overlay per monitor, triggered on focused monitor
+| Package | Purpose |
+|---------|---------|
+| `python-gobject` | PyGObject / GI bindings |
+| `gtk4` | GTK4 toolkit |
+| `gtk4-layer-shell` | Wayland layer surface (includes `Gtk4LayerShell-1.0` GIR) |
 
-### Phase 5 — Live thumbnails (optional, later)
-- [ ] Replace solid-color tiles with `grim -g` screenshots
-- [ ] Refresh on open (not live — snapshot at open time)
+All available via `pacman` on Arch/Hyprland.
 
-## TODO
+### Dev / CI
 
-- [ ] Check `gtk4-layer-shell` is installed
-- [ ] Check `python3-gi` GTK4 bindings work
-- [ ] Scaffold Phase 1 overlay window
+```
+pytest>=8.0
+pytest-cov>=5.0
+ruff>=0.4
+```
+
+Install via `pipx install ruff` and system `pytest`.
+
+---
+
+## Running tests
+
+```bash
+cd ~/Lab/hyprmctl
+GDK_BACKEND=offscreen python3 -m pytest tests/ -v --cov=src --cov-report=term-missing
+```
+
+CI runs automatically on every push via GitHub Actions (lint + test, Python 3.11 & 3.12).
+
+---
+
+## Roadmap
+
+| Phase | Status | Description |
+|-------|--------|-------------|
+| 1 — Overlay shell | ✅ | GTK4 layer-shell overlay, Escape/click-to-close |
+| 2 — Window tiles | ✅ | Live hyprctl data, coloured tiles, keyboard nav |
+| 3 — Interaction | ✅ | Click-to-focus (all layouts), hover highlight, keyboard nav |
+| 4 — Polish | ✅ | App icons, fade-in animation, multi-monitor |
+| 5.1 — Stack layout | ✅ | Squarified treemap, fanned stacks, radial explosion |
+| 5.2 — Window state | 🔲 | Floating / fullscreen / hidden windows, state restore on close |
+| 6 — Live thumbnails | 🔲 | `grim -g` per-window screenshots, refresh loop |
+| 7 — Fly-in / fly-back | 🔲 | Windows animate from real positions, back on click |
