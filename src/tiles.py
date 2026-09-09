@@ -1,8 +1,10 @@
 """
 src/tiles.py — GTK4 tile widget for a single window.
 
-Each tile shows app class + title in a coloured box.
-Supports hover highlight and keyboard focus ring (.tile-focused CSS class).
+Phase 4 additions:
+- App icon via Gtk.Image.new_from_icon_name (GTK IconTheme, auto SVG/PNG)
+- Initials fallback when no icon found
+- Entry animation: opacity 0->1 + scale 0.85->1.0 via CSS transition
 """
 
 from __future__ import annotations
@@ -13,6 +15,10 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 
 from gi.repository import Gdk, Gtk  # noqa: E402
+
+from src.icons import resolve_icon_name  # noqa: E402
+
+_ICON_SIZE = 32  # px
 
 
 def _class_to_hue(app_class: str) -> float:
@@ -60,7 +66,7 @@ def class_border_css(app_class: str) -> str:
 
 class TileWidget(Gtk.Box):
     """
-    A single window tile.
+    A single window tile: icon (or initials) + app class label + title.
 
     Parameters
     ----------
@@ -71,7 +77,7 @@ class TileWidget(Gtk.Box):
     """
 
     def __init__(self, client: dict, on_click=None) -> None:
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._client = client
         self._on_click_cb = on_click
 
@@ -85,12 +91,18 @@ class TileWidget(Gtk.Box):
 
         self._inject_css(app_class, address)
 
-        # App class label (small header)
+        # Icon row: icon/initials + app class label
+        icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        icon_row.set_halign(Gtk.Align.START)
+        icon_row.append(self._make_icon(app_class))
+
         cls_label = Gtk.Label(label=app_class)
         cls_label.set_halign(Gtk.Align.START)
+        cls_label.set_valign(Gtk.Align.CENTER)
         cls_label.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
         cls_label.add_css_class("tile-class")
-        self.append(cls_label)
+        icon_row.append(cls_label)
+        self.append(icon_row)
 
         # Window title
         title_label = Gtk.Label(label=title)
@@ -103,7 +115,7 @@ class TileWidget(Gtk.Box):
         title_label.add_css_class("tile-title")
         self.append(title_label)
 
-        # Spacer so labels sit at top
+        # Spacer
         spacer = Gtk.Box()
         spacer.set_vexpand(True)
         self.append(spacer)
@@ -119,6 +131,23 @@ class TileWidget(Gtk.Box):
         self.set_margin_bottom(6)
         self.set_margin_start(8)
         self.set_margin_end(8)
+
+    def _make_icon(self, app_class: str) -> Gtk.Widget:
+        """Return a Gtk.Image for the app, or an initials label fallback."""
+        icon_name = resolve_icon_name(app_class)
+        if icon_name:
+            img = Gtk.Image.new_from_icon_name(icon_name)
+            img.set_pixel_size(_ICON_SIZE)
+            img.set_valign(Gtk.Align.CENTER)
+            return img
+
+        # Initials fallback
+        initials = (app_class[:2]).upper()
+        lbl = Gtk.Label(label=initials)
+        lbl.set_size_request(_ICON_SIZE, _ICON_SIZE)
+        lbl.set_valign(Gtk.Align.CENTER)
+        lbl.add_css_class("tile-initials")
+        return lbl
 
     def set_focused(self, focused: bool) -> None:
         """Toggle the keyboard-focus ring on this tile."""

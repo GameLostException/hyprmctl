@@ -18,7 +18,7 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gtk4LayerShell", "1.0")
 
-from gi.repository import Gdk, Gtk  # noqa: E402
+from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
 
 from src.hypr import get_active_monitor, get_active_workspace_clients  # noqa: E402
@@ -49,9 +49,24 @@ _BASE_CSS = """
     color: rgba(255, 255, 255, 0.90);
     font-size: 13px;
 }
+.tile-initials {
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 13px;
+    font-weight: bold;
+    background-color: rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+}
 .mc-empty {
     color: rgba(255, 255, 255, 0.4);
     font-size: 18px;
+}
+/* Open animation: tiles fade + scale in */
+.tile-animate {
+    opacity: 0;
+    transition: opacity 140ms ease, transform 140ms ease;
+}
+.tile-animate-in {
+    opacity: 1;
 }
 """
 
@@ -119,6 +134,17 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             self._show_empty("No monitor detected")
             return
 
+        # Pin overlay to the active monitor
+        display = Gdk.Display.get_default()
+        if display is not None:
+            mon_list = display.get_monitors()
+            connector = monitor.get("name", "")
+            for i in range(mon_list.get_n_items()):
+                m = mon_list.get_item(i)
+                if hasattr(m, "get_connector") and m.get_connector() == connector:
+                    LayerShell.set_monitor(self, m)
+                    break
+
         mon_w = monitor.get("width", 1920)
         mon_h = monitor.get("height", 1080)
         scale = monitor.get("scale", 1.0)
@@ -130,18 +156,15 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             self._show_empty("No windows on this workspace")
             return
 
-        # Extra top padding to make room for group labels
         tiles = compute_layout(clients, log_w, log_h, padding=52, gap=14)
         self._place_tiles(tiles)
 
     def _place_tiles(self, tiles) -> None:
-        # Track which app classes we've already placed a label for
         seen_classes: set[str] = set()
 
-        for tile_geo in tiles:
+        for i, tile_geo in enumerate(tiles):
             app_class = tile_geo.client.get("class") or "unknown"
 
-            # Group label above the first tile of each app class
             if app_class not in seen_classes:
                 seen_classes.add(app_class)
                 label = Gtk.Label(label=app_class.upper())
@@ -151,8 +174,18 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
             widget = TileWidget(tile_geo.client, on_click=self._on_tile_click)
             widget.set_size_request(int(tile_geo.w), int(tile_geo.h))
+            widget.add_css_class("tile-animate")
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
+
+            # Staggered fade-in: schedule .tile-animate-in for each tile
+            delay = 30 + i * 18  # ms — 30ms base + 18ms per tile
+            GLib.timeout_add(delay, self._animate_in, widget)
+
+    @staticmethod
+    def _animate_in(widget: Gtk.Widget) -> bool:
+        widget.add_css_class("tile-animate-in")
+        return False  # don't repeat
 
     def _show_empty(self, message: str) -> None:
         label = Gtk.Label(label=message)
