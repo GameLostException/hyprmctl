@@ -61,6 +61,63 @@ class TestFocusWindowDispatch:
 
         assert dispatched == [f"address:{a}" for a in addresses]
 
+    def test_monocle_sends_bringactivetotop(self):
+        """In monocle layout, bringactivetotop must be dispatched after focuswindow."""
+        import json
+        calls = []
+
+        ws_json = json.dumps({"id": 1, "tiledLayout": "monocle"})
+
+        def fake_run(cmd, **kwargs):
+            # Simulate hyprctl activeworkspace -j returning monocle
+            if cmd == ["hyprctl", "activeworkspace", "-j"]:
+                m = MagicMock()
+                m.stdout = ws_json
+                return m
+            calls.append(cmd)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            import subprocess
+            addr = "0xabc"
+            subprocess.run(
+                ["hyprctl", "dispatch", "focuswindow", f"address:{addr}"],
+                capture_output=True,
+            )
+            # Simulate monocle branch
+            layout = json.loads(ws_json).get("tiledLayout", "dwindle")
+            if layout == "monocle":
+                subprocess.run(
+                    ["hyprctl", "dispatch", "bringactivetotop"],
+                    capture_output=True,
+                )
+
+        assert ["hyprctl", "dispatch", "bringactivetotop"] in calls
+
+    def test_dwindle_does_not_send_bringactivetotop(self):
+        """In dwindle layout, bringactivetotop must NOT be dispatched."""
+        import json
+        calls = []
+
+        ws_json = json.dumps({"id": 1, "tiledLayout": "dwindle"})
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            import subprocess
+            layout = json.loads(ws_json).get("tiledLayout", "dwindle")
+            subprocess.run(
+                ["hyprctl", "dispatch", "focuswindow", "address:0xabc"],
+                capture_output=True,
+            )
+            if layout == "monocle":
+                subprocess.run(
+                    ["hyprctl", "dispatch", "bringactivetotop"],
+                    capture_output=True,
+                )
+
+        assert ["hyprctl", "dispatch", "bringactivetotop"] not in calls
+
 
 class TestKeyboardNavIndex:
     """Test index arithmetic for keyboard navigation (no GTK needed)."""

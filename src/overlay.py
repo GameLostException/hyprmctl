@@ -10,6 +10,7 @@ Phase 3 additions:
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import gi
@@ -24,6 +25,21 @@ from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
 from src.hypr import get_active_monitor, get_active_workspace_clients  # noqa: E402
 from src.layout import compute_layout  # noqa: E402
 from src.tiles import TileWidget  # noqa: E402
+
+
+def _active_layout() -> str:
+    """Return the current Hyprland layout name for the active workspace."""
+    try:
+        result = subprocess.run(
+            ["hyprctl", "activeworkspace", "-j"],
+            capture_output=True, text=True, check=True,
+        )
+        ws = json.loads(result.stdout)
+        # tiledLayout reflects hawesome's general:layout setting
+        return ws.get("tiledLayout", "dwindle")
+    except Exception:
+        return "dwindle"
+
 
 _BASE_CSS = """
 .mc-root {
@@ -210,6 +226,13 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             ["hyprctl", "dispatch", "focuswindow", f"address:{address}"],
             capture_output=True,
         )
+        # In monocle layout, focuswindow alone doesn't visually bring the window
+        # to the front of the Z-stack. bringactivetotop fixes this.
+        if _active_layout() == "monocle":
+            subprocess.run(
+                ["hyprctl", "dispatch", "bringactivetotop"],
+                capture_output=True,
+            )
         self.close()
 
     def _on_bg_click(self, gesture, n_press, x, y) -> None:
