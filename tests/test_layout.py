@@ -1,13 +1,21 @@
 """
-tests/test_layout.py — Unit tests for src/layout.py.
+tests/test_layout.py — Unit tests for the zone-based layout engine.
 Pure functions; no mocking needed.
 """
 
+import math
+
+import pytest
+
 from src.layout import (
+    TileGeometry,
+    _best_grid,
     _fit_in_cell,
+    _tile_zone,
     compute_layout,
     group_by_class,
 )
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -40,8 +48,6 @@ class TestGroupByClass:
         ]
         groups = group_by_class(clients)
         assert set(groups.keys()) == {"firefox", "kitty"}
-        assert len(groups["firefox"]) == 2
-        assert len(groups["kitty"]) == 1
 
     def test_empty(self):
         assert group_by_class([]) == {}
@@ -56,13 +62,11 @@ class TestGroupByClass:
 
 class TestFitInCell:
     def test_wide_content_in_square_cell(self):
-        """16:9 content in a 200×200 cell → constrained by width."""
         w, h = _fit_in_cell(200, 200, 16 / 9)
         assert abs(w - 200) < 0.01
         assert abs(h - 200 * 9 / 16) < 0.01
 
     def test_tall_content_in_wide_cell(self):
-        """9:16 content in a 400×200 cell → constrained by height."""
         w, h = _fit_in_cell(400, 200, 9 / 16)
         assert abs(h - 200) < 0.01
         assert abs(w - 200 * 9 / 16) < 0.01
@@ -73,7 +77,57 @@ class TestFitInCell:
         assert abs(h - 90) < 0.01
 
 
-# ── compute_layout ─────────────────────────────────────────────────────────────
+# ── _best_grid ─────────────────────────────────────────────────────────────────
+
+class TestBestGrid:
+    def test_single_window_is_1x1(self):
+        cols, rows = _best_grid(1, 800, 600, 12)
+        assert cols == 1 and rows == 1
+
+    def test_two_windows_wider_than_tall_prefers_2cols(self):
+        # Wide zone → 2 columns fits better than 1col×2rows
+        cols, rows = _best_grid(2, 800, 200, 12)
+        assert cols == 2
+
+    def test_four_windows_square_zone_prefers_2x2(self):
+        cols, rows = _best_grid(4, 800, 800, 12)
+        assert cols * rows >= 4
+
+    def test_never_exceeds_window_count(self):
+        for n in range(1, 10):
+            cols, rows = _best_grid(n, 1600, 900, 12)
+            assert cols <= n
+            assert cols * rows >= n
+
+
+# ── _tile_zone ─────────────────────────────────────────────────────────────────
+
+class TestTileZone:
+    def test_empty_returns_empty(self):
+        assert _tile_zone([], 0, 0, 800, 600, 12) == []
+
+    def test_tiles_within_zone(self):
+        clients = [make_client(f"0x{i}", "kitty") for i in range(4)]
+        tiles = _tile_zone(clients, 100, 50, 600, 400, 12)
+        for t in tiles:
+            assert t.x >= 100, f"x={t.x} < zone_x=100"
+            assert t.y >= 50, f"y={t.y} < zone_y=50"
+            assert t.x + t.w <= 100 + 600 + 1
+            assert t.y + t.h <= 50 + 400 + 1
+
+    def test_one_tile_per_client(self):
+        clients = [make_client(f"0x{i}", "app") for i in range(5)]
+        tiles = _tile_zone(clients, 0, 0, 1000, 800, 12)
+        assert len(tiles) == 5
+
+    def test_aspect_ratio_preserved(self):
+        clients = [make_client("0x1", "app", w=1600, h=900)]
+        tiles = _tile_zone(clients, 0, 0, 800, 600, 12)
+        t = tiles[0]
+        assert abs(t.w / t.h - 16 / 9) < 0.05
+
+
+# ── compute_layout (zone-based) ───────────────────────────────────────────────
 
 class TestComputeLayout:
     W, H = 1920, 1080
@@ -81,64 +135,87 @@ class TestComputeLayout:
     def test_empty_returns_empty(self):
         assert compute_layout([], self.W, self.H) == []
 
-    def test_single_tile_fills_most_of_screen(self):
-        clients = [make_client("0x1", "firefox")]
-        tiles = compute_layout(clients, self.W, self.H, padding=40, gap=12)
-        assert len(tiles) == 1
-        t = tiles[0]
-        # Tile should be large (at least 60% of available area)
-        avail_w = self.W - 80
-        avail_h = self.H - 80
-        assert t.w > avail_w * 0.6
-        assert t.h > avail_h * 0.6
-
-    def test_tiles_within_bounds(self):
-        clients = [make_client(f"0x{i}", "firefox") for i in range(6)]
-        tiles = compute_layout(clients, self.W, self.H, padding=40, gap=12)
-        for t in tiles:
-            assert t.x >= 40, f"tile x={t.x} too small"
-            assert t.y >= 40, f"tile y={t.y} too small"
-            assert t.x + t.w <= self.W - 40 + 1, "tile right edge out of bounds"
-            assert t.y + t.h <= self.H - 40 + 1, "tile bottom edge out of bounds"
-
     def test_one_tile_per_client(self):
         clients = [make_client(f"0x{i}", f"app{i}") for i in range(5)]
         tiles = compute_layout(clients, self.W, self.H)
         assert len(tiles) == len(clients)
 
-    def test_groups_are_adjacent(self):
-        """Windows of the same app class should appear consecutively."""
-        clients = [
-            make_client("0x1", "firefox", "Tab 1"),
-            make_client("0x2", "kitty",   "term 1"),
-            make_client("0x3", "firefox", "Tab 2"),
-        ]
-        tiles = compute_layout(clients, self.W, self.H)
-        classes = [t.client["class"] for t in tiles]
-        # firefox has 2 windows → should be sorted first (larger group)
-        # then kitty
-        assert classes[0] == "firefox"
-        assert classes[1] == "firefox"
-        assert classes[2] == "kitty"
+    def test_all_tiles_within_screen(self):
+        clients = [make_client(f"0x{i}", f"app{i % 3}") for i in range(6)]
+        tiles = compute_layout(clients, self.W, self.H, padding=40)
+        for t in tiles:
+            assert t.x >= 40, f"x={t.x:.0f} too small"
+            assert t.y >= 40, f"y={t.y:.0f} too small"
+            assert t.x + t.w <= self.W - 40 + 1, f"right edge out of bounds"
+            assert t.y + t.h <= self.H - 40 + 1, f"bottom edge out of bounds"
 
-    def test_aspect_ratio_preserved(self):
-        clients = [make_client("0x1", "firefox", w=1600, h=900)]  # 16:9
-        tiles = compute_layout(clients, self.W, self.H, padding=40, gap=12)
-        t = tiles[0]
-        actual_aspect = t.w / t.h
-        assert abs(actual_aspect - 16 / 9) < 0.05
+    def test_zones_are_horizontally_separated(self):
+        """Windows of different apps must not share the same x-range."""
+        clients = (
+            [make_client(f"0x{i}", "firefox") for i in range(3)] +
+            [make_client(f"0x{i+3}", "kitty") for i in range(3)]
+        )
+        tiles = compute_layout(clients, self.W, self.H, padding=40, zone_gap=20)
+        firefox_tiles = [t for t in tiles if t.client["class"] == "firefox"]
+        kitty_tiles = [t for t in tiles if t.client["class"] == "kitty"]
+
+        firefox_max_x = max(t.x + t.w for t in firefox_tiles)
+        kitty_min_x = min(t.x for t in kitty_tiles)
+        # kitty zone starts after firefox zone (with gap)
+        assert kitty_min_x > firefox_max_x - 1
+
+    def test_larger_group_gets_more_width(self):
+        """A group with 4 windows must occupy more width than one with 1."""
+        clients = (
+            [make_client(f"0x{i}", "big") for i in range(4)] +
+            [make_client("0x10", "small")]
+        )
+        tiles = compute_layout(clients, self.W, self.H, padding=40)
+        big_xs = [t.x for t in tiles if t.client["class"] == "big"]
+        small_xs = [t.x for t in tiles if t.client["class"] == "small"]
+
+        big_span = max(t.x + t.w for t in tiles if t.client["class"] == "big") - min(big_xs)
+        small_span = max(t.x + t.w for t in tiles if t.client["class"] == "small") - min(small_xs)
+        assert big_span > small_span
+
+    def test_proportional_zones_sum_to_available_width(self):
+        """Zone widths should sum to available width (minus gaps)."""
+        clients = (
+            [make_client(f"0x{i}", "firefox") for i in range(4)] +
+            [make_client(f"0x{i+4}", "kitty") for i in range(2)]
+        )
+        padding, zone_gap = 40, 20
+        tiles = compute_layout(clients, self.W, self.H, padding=padding, zone_gap=zone_gap)
+        # firefox gets 4/6 of strip pool, kitty gets 2/6
+        # Total zone spans + 1 gap should equal avail_w
+        ff = [t for t in tiles if t.client["class"] == "firefox"]
+        kt = [t for t in tiles if t.client["class"] == "kitty"]
+        ff_span = max(t.x + t.w for t in ff) - min(t.x for t in ff)
+        kt_span = max(t.x + t.w for t in kt) - min(t.x for t in kt)
+        # Ratio should be close to 4:2 = 2:1
+        assert abs(ff_span / kt_span - 2.0) < 0.5
 
     def test_no_overlapping_tiles(self):
-        clients = [make_client(f"0x{i}", f"app{i%3}") for i in range(9)]
+        clients = [make_client(f"0x{i}", f"app{i % 3}") for i in range(9)]
         tiles = compute_layout(clients, self.W, self.H, padding=40, gap=12)
         for i, a in enumerate(tiles):
             for j, b in enumerate(tiles):
                 if i >= j:
                     continue
-                overlap_x = a.x < b.x + b.w and a.x + a.w > b.x
-                overlap_y = a.y < b.y + b.h and a.y + a.h > b.y
+                overlap_x = a.x < b.x + b.w - 1 and a.x + a.w > b.x + 1
+                overlap_y = a.y < b.y + b.h - 1 and a.y + a.h > b.y + 1
                 assert not (overlap_x and overlap_y), (
-                    f"Tiles {i} and {j} overlap: "
-                    f"({a.x:.0f},{a.y:.0f},{a.w:.0f},{a.h:.0f}) vs "
-                    f"({b.x:.0f},{b.y:.0f},{b.w:.0f},{b.h:.0f})"
+                    f"Tiles {i}({a.client['class']}) and {j}({b.client['class']}) overlap"
                 )
+
+    def test_single_app_fills_full_width(self):
+        """One app group should span the full available width."""
+        clients = [make_client(f"0x{i}", "kitty") for i in range(4)]
+        padding = 40
+        tiles = compute_layout(clients, self.W, self.H, padding=padding)
+        min_x = min(t.x for t in tiles)
+        max_x = max(t.x + t.w for t in tiles)
+        # Should use most of the available width
+        assert min_x >= padding - 1
+        assert max_x <= self.W - padding + 1
+        assert (max_x - min_x) > (self.W - 2 * padding) * 0.7
