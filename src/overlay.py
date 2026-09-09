@@ -346,7 +346,13 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         for i, tile_geo in enumerate(tiles):
             addr   = tile_geo.client.get("address", "")
             pixbuf = thumbnails.get(addr)
-            widget = TileWidget(tile_geo.client, on_click=self._on_tile_click, pixbuf=pixbuf)
+            widget = TileWidget(
+                tile_geo.client,
+                on_click=self._on_tile_click,
+                pixbuf=pixbuf,
+                tile_w=int(tile_geo.w),
+                tile_h=int(tile_geo.h),
+            )
             widget.set_size_request(int(tile_geo.w), int(tile_geo.h))
             widget._orig_x = tile_geo.x
             widget._orig_y = tile_geo.y

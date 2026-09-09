@@ -2,10 +2,10 @@
 src/tiles.py — GTK4 tile widget for a single window.
 
 Two render modes:
-  - Screenshot: GdkPixbuf scaled to fill tile, semi-transparent bottom bar
-                with icon + title pinned over the image.
-  - Colour-fill: app HSL colour background + icon + class label + title.
-                 Used when grim capture fails or is unavailable.
+  Screenshot: pixbuf pre-scaled to exact tile_w × tile_h, rendered via
+              Gtk.Image (reliable in Gtk.Fixed). Dark title bar below image.
+  Colour-fill: app HSL colour background + icon + class + title.
+               Used when no pixbuf available.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from gi.repository import Gdk, GdkPixbuf, Gtk  # noqa: E402
 
 from src.icons import resolve_icon_name  # noqa: E402
 
-_ICON_SIZE = 32  # px in colour-fill mode
-_BAR_ICON  = 20  # px icon in screenshot bar
+_ICON_SIZE = 32
+_BAR_H     = 28   # height of title bar in screenshot mode
 
 
 def _class_to_hue(app_class: str) -> float:
@@ -63,15 +63,17 @@ def class_border_css(app_class: str) -> str:
     return f"rgba({int(r * 255)}, {int(g * 255)}, {int(b * 255)}, 0.85)"
 
 
-class TileWidget(Gtk.Overlay):
+class TileWidget(Gtk.Box):
     """
-    Single window tile: screenshot or colour-fill, with icon + title.
+    Single window tile.
 
     Parameters
     ----------
-    client:  hyprctl client dict
+    client:   hyprctl client dict
     on_click: called with address string on click
-    pixbuf:  optional GdkPixbuf — enables screenshot mode
+    pixbuf:   GdkPixbuf screenshot — enables screenshot mode
+    tile_w:   allocated tile width (required for screenshot scaling)
+    tile_h:   allocated tile height (required for screenshot scaling)
     """
 
     def __init__(
@@ -79,8 +81,10 @@ class TileWidget(Gtk.Overlay):
         client: dict,
         on_click=None,
         pixbuf: GdkPixbuf.Pixbuf | None = None,
+        tile_w: int = 0,
+        tile_h: int = 0,
     ) -> None:
-        super().__init__()
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._client = client
         self._on_click_cb = on_click
 
@@ -92,8 +96,8 @@ class TileWidget(Gtk.Overlay):
         self.add_css_class("tile")
         self.add_css_class(self._css_class)
 
-        if pixbuf is not None:
-            self._build_screenshot(pixbuf, app_class, title)
+        if pixbuf is not None and tile_w > 0 and tile_h > 0:
+            self._build_screenshot(pixbuf, app_class, title, tile_w, tile_h)
         else:
             self._build_colour_fill(app_class, title)
             self._inject_border_css(app_class, address)
@@ -111,26 +115,25 @@ class TileWidget(Gtk.Overlay):
         pixbuf: GdkPixbuf.Pixbuf,
         app_class: str,
         title: str,
+        tile_w: int,
+        tile_h: int,
     ) -> None:
-        # Gtk.Picture with can_shrink=True scales to fit allocated size.
-        # ContentFit.COVER fills without letterboxing (crops if needed).
-        img = Gtk.Picture.new_for_pixbuf(pixbuf)
-        img.set_can_shrink(True)
-        img.set_content_fit(Gtk.ContentFit.COVER)
-        img.set_hexpand(True)
-        img.set_vexpand(True)
-        self.set_child(img)
+        img_h = max(tile_h - _BAR_H, 1)
 
-        # Bottom bar: semi-transparent, icon + title
+        # Pre-scale pixbuf to exact pixel dimensions
+        # This is the only approach that reliably renders in Gtk.Fixed
+        scaled = pixbuf.scale_simple(tile_w, img_h, 2)  # GdkPixbuf.InterpType.BILINEAR
+        img = Gtk.Image.new_from_pixbuf(scaled)
+        img.set_size_request(tile_w, img_h)
+        self.append(img)
+
+        # Title bar below screenshot
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         bar.add_css_class("tile-bar")
-        bar.set_halign(Gtk.Align.FILL)
-        bar.set_valign(Gtk.Align.END)
+        bar.set_size_request(tile_w, _BAR_H)
         bar.set_margin_start(4)
         bar.set_margin_end(4)
-        bar.set_margin_bottom(4)
-
-        bar.append(self._make_icon(app_class, size=_BAR_ICON))
+        bar.append(self._make_icon(app_class, size=18))
 
         lbl = Gtk.Label(label=title)
         lbl.set_ellipsize(3)
@@ -138,8 +141,7 @@ class TileWidget(Gtk.Overlay):
         lbl.set_xalign(0.0)
         lbl.add_css_class("tile-bar-title")
         bar.append(lbl)
-
-        self.add_overlay(bar)
+        self.append(bar)
 
     # ── Colour-fill mode ──────────────────────────────────────────────────────
 
@@ -176,7 +178,6 @@ class TileWidget(Gtk.Overlay):
         spacer = Gtk.Box()
         spacer.set_vexpand(True)
         box.append(spacer)
-
         self.set_child(box)
 
     # ── Shared ────────────────────────────────────────────────────────────────
