@@ -1,28 +1,26 @@
 """
 src/tiles.py — GTK4 tile widget for a single window.
 
-Each tile shows:
-  - A coloured border derived from the app class name
-  - The app class as a small header label
-  - The window title as the main label
+Each tile shows app class + title in a coloured box.
+Supports hover highlight and keyboard focus ring (.tile-focused CSS class).
 """
 
 from __future__ import annotations
 
 import gi
 
-gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
+gi.require_version("Gtk", "4.0")
 
 from gi.repository import Gdk, Gtk  # noqa: E402
 
 
 def _class_to_hue(app_class: str) -> float:
-    """Deterministic hue (0–360) from app class string."""
+    """Deterministic hue (0-360) from app class string."""
     h = 0
     for c in app_class:
         h = (h * 31 + ord(c)) & 0xFFFFFF
-    return (h % 360)
+    return h % 360
 
 
 def _hsl_to_rgb(h: float, s: float, lightness: float) -> tuple[float, float, float]:
@@ -50,29 +48,29 @@ def class_color_css(app_class: str, alpha: float = 0.25) -> str:
     """Return a CSS rgba() string for the tile background of an app class."""
     hue = _class_to_hue(app_class)
     r, g, b = _hsl_to_rgb(hue, 0.55, 0.45)
-    return f"rgba({int(r*255)}, {int(g*255)}, {int(b*255)}, {alpha})"
+    return f"rgba({int(r * 255)}, {int(g * 255)}, {int(b * 255)}, {alpha})"
 
 
 def class_border_css(app_class: str) -> str:
-    """Return a CSS rgba() string for the tile border (more opaque)."""
+    """Return a CSS rgba() string for the tile border."""
     hue = _class_to_hue(app_class)
     r, g, b = _hsl_to_rgb(hue, 0.7, 0.55)
-    return f"rgba({int(r*255)}, {int(g*255)}, {int(b*255)}, 0.85)"
+    return f"rgba({int(r * 255)}, {int(g * 255)}, {int(b * 255)}, 0.85)"
 
 
 class TileWidget(Gtk.Box):
     """
-    A single window tile. Displays app class + title inside a coloured box.
+    A single window tile.
 
     Parameters
     ----------
-    client : dict
-        A hyprctl client dict with at least 'class', 'title', 'address'.
-    on_click : callable(address: str) | None
-        Called when the tile is clicked. Receives the window address string.
+    client:
+        hyprctl client dict with at least 'class', 'title', 'address'.
+    on_click:
+        Called with the window address string when the tile is clicked.
     """
 
-    def __init__(self, client: dict, on_click=None):
+    def __init__(self, client: dict, on_click=None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self._client = client
         self._on_click_cb = on_click
@@ -81,24 +79,20 @@ class TileWidget(Gtk.Box):
         title = client.get("title") or "(no title)"
         address = client.get("address", "")
 
-        # --- CSS classes ---
+        self._css_class = f"tile-addr-{address.replace('0x', '')}"
         self.add_css_class("tile")
-        self.add_css_class(f"tile-{app_class.lower().replace(' ', '-')}")
+        self.add_css_class(self._css_class)
 
-        # Inline CSS for per-app color (dynamic, can't be in static sheet)
-        bg = class_color_css(app_class)
-        border = class_border_css(app_class)
-        self._inject_css(address, bg, border)
-        self.add_css_class(f"tile-addr-{address.replace('0x', '')}")
+        self._inject_css(app_class, address)
 
-        # --- App class label (small header) ---
+        # App class label (small header)
         cls_label = Gtk.Label(label=app_class)
         cls_label.set_halign(Gtk.Align.START)
         cls_label.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
         cls_label.add_css_class("tile-class")
         self.append(cls_label)
 
-        # --- Window title ---
+        # Window title
         title_label = Gtk.Label(label=title)
         title_label.set_halign(Gtk.Align.START)
         title_label.set_valign(Gtk.Align.START)
@@ -109,12 +103,12 @@ class TileWidget(Gtk.Box):
         title_label.add_css_class("tile-title")
         self.append(title_label)
 
-        # Fill remaining space so labels sit at top
+        # Spacer so labels sit at top
         spacer = Gtk.Box()
         spacer.set_vexpand(True)
         self.append(spacer)
 
-        # --- Click handler ---
+        # Click handler
         if on_click is not None:
             click_ctrl = Gtk.GestureClick()
             click_ctrl.connect("pressed", lambda g, n, x, y: on_click(address))
@@ -126,8 +120,19 @@ class TileWidget(Gtk.Box):
         self.set_margin_start(8)
         self.set_margin_end(8)
 
-    def _inject_css(self, address: str, bg: str, border: str) -> None:
+    def set_focused(self, focused: bool) -> None:
+        """Toggle the keyboard-focus ring on this tile."""
+        if focused:
+            self.add_css_class("tile-focused")
+        else:
+            self.remove_css_class("tile-focused")
+
+    def _inject_css(self, app_class: str, address: str) -> None:
+        bg = class_color_css(app_class)
+        hover_bg = class_color_css(app_class, alpha=0.42)
+        border = class_border_css(app_class)
         css_class = f"tile-addr-{address.replace('0x', '')}"
+
         css = f"""
         .{css_class} {{
             background-color: {bg};
@@ -135,7 +140,11 @@ class TileWidget(Gtk.Box):
             border-radius: 8px;
         }}
         .{css_class}:hover {{
-            background-color: {bg.replace(', 0.25)', ', 0.38)')};
+            background-color: {hover_bg};
+        }}
+        .{css_class}.tile-focused {{
+            border: 2px solid white;
+            background-color: {hover_bg};
         }}
         """
         provider = Gtk.CssProvider()
