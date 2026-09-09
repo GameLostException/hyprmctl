@@ -38,7 +38,7 @@ _ICON_SIZE = 56               # app icon px at stack center
 
 _BASE_CSS = """
 .mc-root {
-    background-color: rgba(0, 0, 0, 0.72);
+    background-color: rgba(0, 0, 0, 0.55);
 }
 .group-label {
     color: rgba(255, 255, 255, 0.55);
@@ -249,7 +249,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         super().__init__(application=app)
 
         LayerShell.init_for_window(self)
-        LayerShell.set_layer(self, LayerShell.Layer.OVERLAY)
+        LayerShell.set_layer(self, LayerShell.Layer.TOP)   # TOP not OVERLAY — waybar stays visible
         LayerShell.set_exclusive_zone(self, -1)
         LayerShell.set_keyboard_mode(self, LayerShell.KeyboardMode.ON_DEMAND)
         for edge in (LayerShell.Edge.TOP, LayerShell.Edge.BOTTOM,

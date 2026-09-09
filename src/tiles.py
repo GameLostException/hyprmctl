@@ -120,12 +120,16 @@ class TileWidget(Gtk.Box):
     ) -> None:
         img_h = max(tile_h - _BAR_H, 1)
 
-        # Pre-scale pixbuf to exact pixel dimensions
-        # This is the only approach that reliably renders in Gtk.Fixed
-        scaled = pixbuf.scale_simple(tile_w, img_h, 2)  # GdkPixbuf.InterpType.BILINEAR
-        img = Gtk.Image.new_from_pixbuf(scaled)
-        img.set_size_request(tile_w, img_h)
-        self.append(img)
+        # Pre-scale to exact tile dimensions
+        scaled = pixbuf.scale_simple(tile_w, img_h, 2)  # BILINEAR
+
+        # Gdk.Texture → Gtk.Picture with can_shrink=False is the only
+        # approach that reliably renders in Gtk.Fixed under GTK4.14+
+        tex = Gdk.Texture.new_for_pixbuf(scaled)
+        pic = Gtk.Picture.new_for_paintable(tex)
+        pic.set_can_shrink(False)
+        pic.set_size_request(tile_w, img_h)
+        self.append(pic)
 
         # Title bar below screenshot
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
