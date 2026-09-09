@@ -229,6 +229,8 @@ class Stack:
         self.exploded = False
         self._anim_step = 0
         self._anim_id = 0
+        self._hover_count = 0   # widgets in this stack currently under cursor
+        self._collapse_id = 0   # pending collapse GLib source id
 
 
 # ── Overlay window ────────────────────────────────────────────────────────────
@@ -278,11 +280,15 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
 
+        self._built = False  # guard against multiple map events
         self.connect("map", self._on_mapped)
 
     # ── Setup ─────────────────────────────────────────────────────────────────
 
     def _on_mapped(self, _widget) -> None:
+        if self._built:
+            return
+        self._built = True
         monitor = get_active_monitor()
         if monitor is None:
             self._show_empty("No monitor detected")
@@ -379,12 +385,14 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             # Hover on any tile in this stack
             for w in widgets:
                 motion = Gtk.EventControllerMotion()
-                motion.connect("enter", lambda *_, s=stack: self._on_stack_hover(s))
+                motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
+                motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
                 w.add_controller(motion)
 
             # Also hover on icon
             icon_motion = Gtk.EventControllerMotion()
-            icon_motion.connect("enter", lambda *_, s=stack: self._on_stack_hover(s))
+            icon_motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
+            icon_motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
             icon_widget.add_controller(icon_motion)
 
     def _make_stack_icon(self, app_class: str) -> Gtk.Widget:
@@ -411,13 +419,37 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
     # ── Stack hover ───────────────────────────────────────────────────────────
 
-    def _on_stack_hover(self, stack: Stack) -> None:
+    def _on_stack_enter(self, stack: Stack) -> None:
+        """Called when mouse enters any widget belonging to `stack`."""
+        stack._hover_count += 1
         if self._active_stack is stack:
-            return
+            return  # already exploded, nothing to do
+        # Collapse previous stack immediately (cancel any pending collapse)
         if self._active_stack is not None:
+            if self._active_stack._collapse_id:
+                GLib.source_remove(self._active_stack._collapse_id)
+                self._active_stack._collapse_id = 0
             self._animate_stack(self._active_stack, explode=False)
         self._active_stack = stack
         self._animate_stack(stack, explode=True)
+
+    def _on_stack_leave(self, stack: Stack) -> None:
+        """Called when mouse leaves any widget belonging to `stack`."""
+        stack._hover_count = max(0, stack._hover_count - 1)
+        if stack._hover_count > 0:
+            return  # mouse moved to another widget in same stack
+        # Debounce: collapse only if mouse hasn't re-entered within 200ms
+        if stack._collapse_id:
+            GLib.source_remove(stack._collapse_id)
+
+        def do_collapse():
+            stack._collapse_id = 0
+            if stack._hover_count == 0 and self._active_stack is stack:
+                self._animate_stack(stack, explode=False)
+                self._active_stack = None
+            return False
+
+        stack._collapse_id = GLib.timeout_add(200, do_collapse)
 
     # ── Animation ─────────────────────────────────────────────────────────────
 
