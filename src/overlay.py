@@ -67,6 +67,15 @@ _BASE_CSS = """
     background-color: rgba(255, 255, 255, 0.12);
     border-radius: 4px;
 }
+.tile-bar {
+    background-color: rgba(0, 0, 0, 0.55);
+    border-radius: 0 0 8px 8px;
+    padding: 4px 6px;
+}
+.tile-bar-title {
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 11px;
+}
 .mc-empty {
     color: rgba(255, 255, 255, 0.4);
     font-size: 18px;
@@ -315,17 +324,24 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             self._show_empty("No windows on this workspace")
             return
 
-        tiles = compute_layout(clients, log_w, log_h, padding=52, gap=14)
-        self._build_stacks(tiles, log_w, log_h)
+        # Serve thumbnails from the background cache — no delay
+        from src.thumbnails import get_cache
+        cache = get_cache()
+        thumbnails = {c["address"]: cache.get(c["address"]) for c in clients}
 
-    def _build_stacks(self, tiles, screen_w: int, screen_h: int) -> None:
+        tiles = compute_layout(clients, log_w, log_h, padding=52, gap=14)
+        self._build_stacks(tiles, log_w, log_h, thumbnails)
+
+    def _build_stacks(self, tiles, screen_w: int, screen_h: int, thumbnails: dict) -> None:
         from collections import defaultdict
         by_class: dict[str, list] = defaultdict(list)
         tile_widgets: dict[str, list[TileWidget]] = defaultdict(list)
 
         # Place all tile widgets
         for i, tile_geo in enumerate(tiles):
-            widget = TileWidget(tile_geo.client, on_click=self._on_tile_click)
+            addr   = tile_geo.client.get("address", "")
+            pixbuf = thumbnails.get(addr)
+            widget = TileWidget(tile_geo.client, on_click=self._on_tile_click, pixbuf=pixbuf)
             widget.set_size_request(int(tile_geo.w), int(tile_geo.h))
             widget._orig_x = tile_geo.x
             widget._orig_y = tile_geo.y

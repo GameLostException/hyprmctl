@@ -1,10 +1,11 @@
 """
 src/tiles.py — GTK4 tile widget for a single window.
 
-Phase 4 additions:
-- App icon via Gtk.Image.new_from_icon_name (GTK IconTheme, auto SVG/PNG)
-- Initials fallback when no icon found
-- Entry animation: opacity 0->1 + scale 0.85->1.0 via CSS transition
+Two render modes:
+  - Screenshot: GdkPixbuf scaled to fill tile, semi-transparent bottom bar
+                with icon + title pinned over the image.
+  - Colour-fill: app HSL colour background + icon + class label + title.
+                 Used when grim capture fails or is unavailable.
 """
 
 from __future__ import annotations
@@ -12,17 +13,18 @@ from __future__ import annotations
 import gi
 
 gi.require_version("Gdk", "4.0")
+gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Gdk, Gtk  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, Gtk  # noqa: E402
 
 from src.icons import resolve_icon_name  # noqa: E402
 
-_ICON_SIZE = 32  # px
+_ICON_SIZE = 32  # px in colour-fill mode
+_BAR_ICON  = 20  # px icon in screenshot bar
 
 
 def _class_to_hue(app_class: str) -> float:
-    """Deterministic hue (0-360) from app class string."""
     h = 0
     for c in app_class:
         h = (h * 31 + ord(c)) & 0xFFFFFF
@@ -30,7 +32,6 @@ def _class_to_hue(app_class: str) -> float:
 
 
 def _hsl_to_rgb(h: float, s: float, lightness: float) -> tuple[float, float, float]:
-    """Convert HSL (h 0-360, s 0-1, lightness 0-1) to RGB (each 0-1)."""
     h /= 360.0
     if s == 0:
         return lightness, lightness, lightness
@@ -51,130 +52,165 @@ def _hsl_to_rgb(h: float, s: float, lightness: float) -> tuple[float, float, flo
 
 
 def class_color_css(app_class: str, alpha: float = 0.25) -> str:
-    """Return a CSS rgba() string for the tile background of an app class."""
     hue = _class_to_hue(app_class)
     r, g, b = _hsl_to_rgb(hue, 0.55, 0.45)
     return f"rgba({int(r * 255)}, {int(g * 255)}, {int(b * 255)}, {alpha})"
 
 
 def class_border_css(app_class: str) -> str:
-    """Return a CSS rgba() string for the tile border."""
     hue = _class_to_hue(app_class)
     r, g, b = _hsl_to_rgb(hue, 0.7, 0.55)
     return f"rgba({int(r * 255)}, {int(g * 255)}, {int(b * 255)}, 0.85)"
 
 
-class TileWidget(Gtk.Box):
+class TileWidget(Gtk.Overlay):
     """
-    A single window tile: icon (or initials) + app class label + title.
+    Single window tile: screenshot or colour-fill, with icon + title.
 
     Parameters
     ----------
-    client:
-        hyprctl client dict with at least 'class', 'title', 'address'.
-    on_click:
-        Called with the window address string when the tile is clicked.
+    client:  hyprctl client dict
+    on_click: called with address string on click
+    pixbuf:  optional GdkPixbuf — enables screenshot mode
     """
 
-    def __init__(self, client: dict, on_click=None) -> None:
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    def __init__(
+        self,
+        client: dict,
+        on_click=None,
+        pixbuf: GdkPixbuf.Pixbuf | None = None,
+    ) -> None:
+        super().__init__()
         self._client = client
         self._on_click_cb = on_click
 
         app_class = client.get("class") or client.get("initialClass") or "unknown"
-        title = client.get("title") or "(no title)"
-        address = client.get("address", "")
+        title     = client.get("title") or "(no title)"
+        address   = client.get("address", "")
 
         self._css_class = f"tile-addr-{address.replace('0x', '')}"
         self.add_css_class("tile")
         self.add_css_class(self._css_class)
 
-        self._inject_css(app_class, address)
+        if pixbuf is not None:
+            self._build_screenshot(pixbuf, app_class, title)
+        else:
+            self._build_colour_fill(app_class, title)
+            self._inject_border_css(app_class, address)
 
-        # Icon row: icon/initials + app class label
-        icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        icon_row.set_halign(Gtk.Align.START)
-        icon_row.append(self._make_icon(app_class))
-
-        cls_label = Gtk.Label(label=app_class)
-        cls_label.set_halign(Gtk.Align.START)
-        cls_label.set_valign(Gtk.Align.CENTER)
-        cls_label.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
-        cls_label.add_css_class("tile-class")
-        icon_row.append(cls_label)
-        self.append(icon_row)
-
-        # Window title
-        title_label = Gtk.Label(label=title)
-        title_label.set_halign(Gtk.Align.START)
-        title_label.set_valign(Gtk.Align.START)
-        title_label.set_wrap(True)
-        title_label.set_wrap_mode(2)  # PANGO_WRAP_WORD_CHAR
-        title_label.set_max_width_chars(30)
-        title_label.set_ellipsize(3)
-        title_label.add_css_class("tile-title")
-        self.append(title_label)
-
-        # Spacer
-        spacer = Gtk.Box()
-        spacer.set_vexpand(True)
-        self.append(spacer)
-
-        # Click handler
         if on_click is not None:
             click_ctrl = Gtk.GestureClick()
             click_ctrl.connect("pressed", lambda g, n, x, y: on_click(address))
             self.add_controller(click_ctrl)
             self.set_cursor(Gdk.Cursor.new_from_name("pointer", None))
 
-        self.set_margin_top(6)
-        self.set_margin_bottom(6)
-        self.set_margin_start(8)
-        self.set_margin_end(8)
+    # ── Screenshot mode ───────────────────────────────────────────────────────
 
-    def _make_icon(self, app_class: str) -> Gtk.Widget:
-        """Return a Gtk.Image for the app, or an initials label fallback."""
+    def _build_screenshot(
+        self,
+        pixbuf: GdkPixbuf.Pixbuf,
+        app_class: str,
+        title: str,
+    ) -> None:
+        # Screenshot fills the whole tile
+        img = Gtk.Picture.new_for_pixbuf(pixbuf)
+        img.set_content_fit(Gtk.ContentFit.FILL)
+        img.set_hexpand(True)
+        img.set_vexpand(True)
+        self.set_child(img)
+
+        # Bottom bar: semi-transparent, icon + title
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        bar.add_css_class("tile-bar")
+        bar.set_halign(Gtk.Align.FILL)
+        bar.set_valign(Gtk.Align.END)
+        bar.set_margin_start(4)
+        bar.set_margin_end(4)
+        bar.set_margin_bottom(4)
+
+        bar.append(self._make_icon(app_class, size=_BAR_ICON))
+
+        lbl = Gtk.Label(label=title)
+        lbl.set_ellipsize(3)
+        lbl.set_hexpand(True)
+        lbl.set_xalign(0.0)
+        lbl.add_css_class("tile-bar-title")
+        bar.append(lbl)
+
+        self.add_overlay(bar)
+
+    # ── Colour-fill mode ──────────────────────────────────────────────────────
+
+    def _build_colour_fill(self, app_class: str, title: str) -> None:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_hexpand(True)
+        box.set_vexpand(True)
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        icon_row.set_halign(Gtk.Align.START)
+        icon_row.append(self._make_icon(app_class, size=_ICON_SIZE))
+
+        cls_label = Gtk.Label(label=app_class)
+        cls_label.set_halign(Gtk.Align.START)
+        cls_label.set_valign(Gtk.Align.CENTER)
+        cls_label.set_ellipsize(3)
+        cls_label.add_css_class("tile-class")
+        icon_row.append(cls_label)
+        box.append(icon_row)
+
+        title_label = Gtk.Label(label=title)
+        title_label.set_halign(Gtk.Align.START)
+        title_label.set_wrap(True)
+        title_label.set_wrap_mode(2)
+        title_label.set_max_width_chars(30)
+        title_label.set_ellipsize(3)
+        title_label.add_css_class("tile-title")
+        box.append(title_label)
+
+        spacer = Gtk.Box()
+        spacer.set_vexpand(True)
+        box.append(spacer)
+
+        self.set_child(box)
+
+    # ── Shared ────────────────────────────────────────────────────────────────
+
+    def _make_icon(self, app_class: str, size: int = _ICON_SIZE) -> Gtk.Widget:
         icon_name = resolve_icon_name(app_class)
         if icon_name:
             img = Gtk.Image.new_from_icon_name(icon_name)
-            img.set_pixel_size(_ICON_SIZE)
+            img.set_pixel_size(size)
             img.set_valign(Gtk.Align.CENTER)
             return img
-
-        # Initials fallback
-        initials = (app_class[:2]).upper()
-        lbl = Gtk.Label(label=initials)
-        lbl.set_size_request(_ICON_SIZE, _ICON_SIZE)
+        lbl = Gtk.Label(label=(app_class[:2]).upper())
+        lbl.set_size_request(size, size)
         lbl.set_valign(Gtk.Align.CENTER)
         lbl.add_css_class("tile-initials")
         return lbl
 
     def set_focused(self, focused: bool) -> None:
-        """Toggle the keyboard-focus ring on this tile."""
         if focused:
             self.add_css_class("tile-focused")
         else:
             self.remove_css_class("tile-focused")
 
-    def _inject_css(self, app_class: str, address: str) -> None:
-        bg = class_color_css(app_class)
+    def _inject_border_css(self, app_class: str, address: str) -> None:
+        bg       = class_color_css(app_class)
         hover_bg = class_color_css(app_class, alpha=0.42)
-        border = class_border_css(app_class)
-        css_class = f"tile-addr-{address.replace('0x', '')}"
-
+        border   = class_border_css(app_class)
+        cls      = f"tile-addr-{address.replace('0x', '')}"
         css = f"""
-        .{css_class} {{
+        .{cls} {{
             background-color: {bg};
             border: 2px solid {border};
             border-radius: 8px;
         }}
-        .{css_class}:hover {{
-            background-color: {hover_bg};
-        }}
-        .{css_class}.tile-focused {{
-            border: 2px solid white;
-            background-color: {hover_bg};
-        }}
+        .{cls}:hover {{ background-color: {hover_bg}; }}
+        .{cls}.tile-focused {{ border: 2px solid white; background-color: {hover_bg}; }}
         """
         provider = Gtk.CssProvider()
         provider.load_from_data(css.encode())
