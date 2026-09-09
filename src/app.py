@@ -1,14 +1,9 @@
 """
-src/app.py — hyprmctl application + Unix socket IPC.
+src/app.py — hyprmctl persistent daemon.
 
-hyprmctl runs as a persistent daemon:
-  - Keeps the thumbnail cache warm in the background
-  - Listens on a Unix socket for commands
-  - On 'show': displays the Mission Control overlay
-  - On 'hide'/'toggle': hides it
-
-Hyprland keybind sends 'show' via: python3 hyprmctl.py --show
-If no daemon is running, --show starts one.
+The GTK application holds itself alive via hold()/release() so it doesn't
+quit when the overlay window closes. The overlay is only shown on 'show'
+command via the IPC socket (or --show flag), never on startup.
 """
 
 from __future__ import annotations
@@ -26,30 +21,36 @@ from gi.repository import GLib, Gtk  # noqa: E402
 from src.overlay import MissionControlOverlay  # noqa: E402
 from src.thumbnails import get_cache  # noqa: E402
 
-_UID      = os.getuid()
-_SOCK     = f"/tmp/hyprmctl-{_UID}.sock"
+_UID  = os.getuid()
+_SOCK = f"/tmp/hyprmctl-{_UID}.sock"
 
 
 class MissionControlApp(Gtk.Application):
     def __init__(self) -> None:
         super().__init__(application_id="org.boris.hyprmctl")
         self._overlay: MissionControlOverlay | None = None
-        self.connect("activate", self._on_activate)
         self.connect("startup", self._on_startup)
+        self.connect("activate", self._on_activate)
 
     def _on_startup(self, app: Gtk.Application) -> None:
-        # Start thumbnail cache
+        # Hold the application alive so it doesn't quit when overlay closes
+        self.hold()
+        # Start thumbnail cache daemon
         get_cache()
         # Start IPC socket listener
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _on_activate(self, app: Gtk.Application) -> None:
-        self._show_overlay()
+        # activate fires on first run — just show the overlay if --show was passed
+        # (hyprmctl.py passes sys.argv which may contain --show)
+        import sys
+        if "--show" in sys.argv:
+            self._show_overlay()
+        # Otherwise do nothing — wait for IPC socket command
 
     # ── IPC socket ────────────────────────────────────────────────────────────
 
     def _serve(self) -> None:
-        """Listen on Unix socket for show/hide/toggle commands."""
         try:
             os.unlink(_SOCK)
         except OSError:
