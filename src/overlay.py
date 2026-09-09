@@ -324,14 +324,24 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             self._show_empty("No windows on this workspace")
             return
 
-        # Serve from cache immediately — no blocking capture.
-        # Kick off background warm() for any uncached windows so they appear
-        # next time the overlay is opened.
-        from src.thumbnails import get_cache
+        # Capture active WS windows synchronously before building tiles.
+        # Parallel with 4 workers: ~2s for 9 windows — acceptable open delay.
+        # Already-cached windows skip capture (instant).
+        from concurrent.futures import ThreadPoolExecutor
+
+        from src.thumbnails import _capture_now, get_cache
+
         cache = get_cache()
-        uncached = [c["address"] for c in clients if cache.get(c["address"]) is None]
+        uncached = [c for c in clients if cache.get(c["address"]) is None]
+
         if uncached:
-            cache.warm(uncached)
+            def capture_and_store(client):
+                pb = _capture_now(client)
+                if pb is not None:
+                    cache._store(client["address"], pb)
+
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                list(ex.map(capture_and_store, uncached))
 
         thumbnails = {c["address"]: cache.get(c["address"]) for c in clients}
         tiles = compute_layout(clients, log_w, log_h, padding=52, gap=14)
