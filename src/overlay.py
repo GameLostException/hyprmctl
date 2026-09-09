@@ -11,7 +11,6 @@ Phase 3 additions:
 from __future__ import annotations
 
 import subprocess
-import threading
 
 import gi
 
@@ -207,27 +206,30 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
     # ── Event handlers ───────────────────────────────────────────────────────
 
     def _on_tile_click(self, address: str) -> None:
-        # We must close the overlay first, otherwise Hyprland re-focuses the
-        # previously active window when our surface is destroyed, clobbering
-        # the focuswindow dispatch (critical in monocle layout).
+        # follow_mouse=1 means when this overlay surface is destroyed, Hyprland
+        # re-focuses whatever window is under the cursor. In monocle all windows
+        # are stacked at the same position so the previously-focused one always
+        # wins unless we move the cursor into the target window first.
         #
-        # GLib.timeout_add won't fire after the last window closes (main loop
-        # exits), so we use a background thread that sleeps briefly then
-        # dispatches — the thread outlives the GTK main loop.
-        threading.Thread(target=self._deferred_focus, args=(address,), daemon=True).start()
-        self.close()
-
-    def _deferred_focus(self, address: str) -> None:
-        """Sleep briefly to let surface destruction settle, then dispatch focus."""
-        import time
-        time.sleep(0.12)
-        subprocess.run(
-            ["hyprctl", "--batch",
-             f"keyword cursor:no_warps true ; "
-             f"dispatch focuswindow address:{address} ; "
-             f"keyword cursor:no_warps false"],
-            capture_output=True,
+        # Fix: warp cursor to target window's center, then focuswindow.
+        # When the overlay closes, follow_mouse re-evaluates at the new cursor
+        # position which is now over the target window — focus sticks.
+        client = next(
+            (t._client for t in self._tiles if t._client.get("address") == address),
+            None,
         )
+        batch = ""
+        if client:
+            at = client.get("at", [0, 0])
+            sz = client.get("size", [100, 100])
+            cx = at[0] + sz[0] // 2
+            cy = at[1] + sz[1] // 2
+            batch = f"dispatch movecursor {cx} {cy} ; "
+        batch += f"dispatch focuswindow address:{address}"
+
+        self.set_visible(False)
+        subprocess.run(["hyprctl", "--batch", batch], capture_output=True)
+        self.get_application().quit()
 
     def _on_bg_click(self, gesture, n_press, x, y) -> None:
         widget = self.pick(x, y, Gtk.PickFlags.DEFAULT)
