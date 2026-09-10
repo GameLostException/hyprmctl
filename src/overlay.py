@@ -136,16 +136,16 @@ def _make_shadow_texture(
     tile_w: int, tile_h: int,
 ) -> Gdk.Texture:
     """
-    Pre-render a blurred drop shadow to a Gdk.Texture once at build time.
-    Zero cost during animation — just a static image moved with Gtk.Fixed.move().
+    Pre-render a uniform blurred drop shadow to a Gdk.Texture once.
+    Shadow is symmetric on all 4 sides — no directional offset.
     """
     import cairo as _cairo
 
     PAD    = _SHADOW_PAD
     RADIUS = 8.0
-    BLUR   = 6.0    # tighter blur — closer to Hyprland default
-    ALPHA  = 0.5
-    STEPS  = 6      # passes (fewer = faster pre-render)
+    BLUR   = 8.0    # blur spread in px
+    ALPHA  = 0.28   # subtle — not overpowering
+    STEPS  = 8
 
     da_w = tile_w + PAD * 2
     da_h = tile_h + PAD * 2
@@ -153,20 +153,19 @@ def _make_shadow_texture(
     surf = _cairo.ImageSurface(_cairo.FORMAT_ARGB32, da_w, da_h)
     ctx  = _cairo.Context(surf)
 
+    # Symmetric: rect centered exactly at PAD,PAD — no x/y offset
     for step in range(STEPS, 0, -1):
         spread = BLUR * step / STEPS
-        a      = ALPHA * (1.0 - (step - 1) / STEPS) / STEPS * 2.2
-        # Offset: 3px right, 4px down — matches Hyprland's default shadow offset
-        rx = PAD - spread + 3
-        ry = PAD - spread + 4
+        a      = ALPHA * step / STEPS / STEPS * 2.5
+        rx = PAD - spread
+        ry = PAD - spread
         rw = tile_w + spread * 2
         rh = tile_h + spread * 2
-        _rounded_rect(ctx, rx, ry, rw, rh, RADIUS + spread * 0.4)
+        _rounded_rect(ctx, rx, ry, rw, rh, RADIUS + spread * 0.3)
         ctx.set_source_rgba(0, 0, 0, a)
         ctx.fill()
 
     surf.flush()
-    # Cairo ARGB32 is BGRA premultiplied; convert row-by-row to RGBA for GdkPixbuf
     src  = surf.get_data()
     n    = da_w * da_h
     rgba = bytearray(n * 4)
@@ -195,10 +194,12 @@ _BASE_CSS = """
     background-color: transparent;
 }
 .group-label {
-    color: rgba(255, 255, 255, 0.75);
+    color: rgba(255, 255, 255, 0.88);
     font-size: 11px;
-    font-weight: bold;
-    letter-spacing: 0.5px;
+    font-weight: 500;
+    background-color: rgba(30, 30, 30, 0.62);
+    border-radius: 10px;
+    padding: 2px 8px;
 }
 .tile {
     border-radius: 8px;
@@ -242,6 +243,17 @@ _BASE_CSS = """
 }
 .stack-icon {
     border-radius: 8px;
+}
+/* App name pill in colour-fill tiles */
+.name-pill {
+    background-color: rgba(30, 30, 30, 0.62);
+    border-radius: 10px;
+    padding: 2px 8px;
+}
+.name-pill-text {
+    color: rgba(255, 255, 255, 0.88);
+    font-size: 11px;
+    font-weight: 500;
 }
 /* Manual drop shadow behind each tile (drawn via Cairo DrawingArea) */
 .tile-shadow {
@@ -513,37 +525,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 pic.set_size_request(log_w, log_h)
                 self._fixed.put(pic, 0, 0)
             except Exception:
-                wallpaper_path = ""  # fall through to solid fallback
-
-        # Dark overlay widget that fades in on top of the wallpaper
-        # (or is the sole background if wallpaper failed)
-        dim = Gtk.Box()
-        dim.set_size_request(log_w, log_h)
-        dim_css = Gtk.CssProvider()
-        dim_css.load_from_data(b".mc-dim { background-color: rgba(0,0,0,0); }")
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(), dim_css,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-        )
-        dim.add_css_class("mc-dim")
-        self._fixed.put(dim, 0, 0)
-        self._dim_widget = dim
-        self._dim_alpha  = 0.0
-        self._dim_target = 0.52 if wallpaper_path else 0.72
-        # Kick off fade-in
-        GLib.timeout_add(16, self._fade_dim)
-
-    def _fade_dim(self) -> bool:
-        """Incrementally increase the dim overlay opacity (fade-in)."""
-        self._dim_alpha = min(self._dim_alpha + 0.04, self._dim_target)
-        css = f".mc-dim {{ background-color: rgba(0,0,0,{self._dim_alpha:.3f}); }}".encode()
-        provider = Gtk.CssProvider()
-        provider.load_from_data(css)
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(), provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
-        )
-        return self._dim_alpha < self._dim_target  # False = stop
+                pass  # fallback: mc-root stays transparent (black compositor bg)
 
     def _make_shadow(self, tile_w: int, tile_h: int) -> Gtk.Picture:
         """

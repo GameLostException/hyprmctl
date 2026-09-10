@@ -164,29 +164,35 @@ class TileWidget(Gtk.Box):
     def _build_colour_fill(
         self, app_class: str, app_name: str, title: str, title_at_top: bool
     ) -> None:
-        # No margins on the outer box — let center_col fill the tile completely
-        self.set_halign(Gtk.Align.FILL)
-        self.set_valign(Gtk.Align.FILL)
+        # Use an Overlay so the center_col is guaranteed to be centered
+        # regardless of how Gtk.Fixed allocates the parent box.
+        overlay = Gtk.Overlay()
+        overlay.set_hexpand(True)
+        overlay.set_vexpand(True)
 
-        # Single centered column: icon + app name, dead-center in tile
-        center_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        # Centered column: icon above pill label
+        center_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         center_col.set_halign(Gtk.Align.CENTER)
         center_col.set_valign(Gtk.Align.CENTER)
-        center_col.set_hexpand(True)
-        center_col.set_vexpand(True)
 
         icon = self._make_icon(app_class, size=_ICON_SIZE)
         icon.set_halign(Gtk.Align.CENTER)
         center_col.append(icon)
 
+        # Fix 3: app name in a semi-transparent grey pill — readable on any bg
+        pill_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        pill_box.set_halign(Gtk.Align.CENTER)
+        pill_box.add_css_class("name-pill")
+
         name_label = Gtk.Label(label=app_name)
         name_label.set_halign(Gtk.Align.CENTER)
         name_label.set_ellipsize(0)
-        name_label.add_css_class("tile-class")
-        center_col.append(name_label)
+        name_label.add_css_class("name-pill-text")
+        pill_box.append(name_label)
+        center_col.append(pill_box)
 
-        self.append(center_col)
-        # Window title is shown via the stack hover label — not on tile itself
+        overlay.set_child(center_col)
+        self.append(overlay)
 
     # ── Shared ────────────────────────────────────────────────────────────────
 
