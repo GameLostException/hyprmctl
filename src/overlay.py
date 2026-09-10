@@ -30,6 +30,76 @@ from src.icons import resolve_icon_name  # noqa: E402
 from src.layout import compute_layout  # noqa: E402
 from src.tiles import TileWidget  # noqa: E402
 
+# ── App display name ──────────────────────────────────────────────────────────
+
+# Well-known overrides: wm_class → human-readable name
+_APP_NAMES: dict[str, str] = {
+    "kitty":           "Kitty",
+    "alacritty":       "Alacritty",
+    "foot":            "Foot",
+    "wezterm":         "WezTerm",
+    "firefox":         "Firefox",
+    "chromium":        "Chromium",
+    "google-chrome":   "Chrome",
+    "brave-browser":   "Brave",
+    "thunar":          "Thunar",
+    "nautilus":        "Files",
+    "nemo":            "Nemo",
+    "dolphin":         "Dolphin",
+    "code":            "VS Code",
+    "code-oss":        "VS Code",
+    "vscodium":        "VSCodium",
+    "nvim":            "Neovim",
+    "vim":             "Vim",
+    "emacs":           "Emacs",
+    "zathura":         "Zathura",
+    "evince":          "Evince",
+    "okular":          "Okular",
+    "vlc":             "VLC",
+    "mpv":             "mpv",
+    "spotify":         "Spotify",
+    "discord":         "Discord",
+    "slack":           "Slack",
+    "telegram-desktop":"Telegram",
+    "signal":          "Signal",
+    "obsidian":        "Obsidian",
+    "gimp":            "GIMP",
+    "inkscape":        "Inkscape",
+    "libreoffice-writer":  "Writer",
+    "libreoffice-calc":    "Calc",
+    "libreoffice-impress": "Impress",
+    "libreoffice":     "LibreOffice",
+    "pcmanfm":         "PCManFM",
+    "ranger":          "Ranger",
+    "rofi":            "Rofi",
+    "waybar":          "Waybar",
+    "swaync":          "Notifications",
+    "nm-applet":       "Network",
+    "blueman-applet":  "Bluetooth",
+    "pavucontrol":     "PulseAudio",
+    "htop":            "htop",
+    "btop":            "btop",
+    "neofetch":        "Neofetch",
+}
+
+
+def _display_name(app_class: str) -> str:
+    """
+    Return a clean human-readable app name from wm_class.
+    Falls back to title-cased class if no override is known.
+    """
+    lower = app_class.lower()
+    if lower in _APP_NAMES:
+        return _APP_NAMES[lower]
+    # Try stripping common suffixes/prefixes and title-case
+    name = app_class.replace("-", " ").replace("_", " ")
+    # Drop common redundant suffixes
+    for suffix in (" desktop", " browser", " stable", " nightly"):
+        if name.lower().endswith(suffix):
+            name = name[: -len(suffix)]
+    return name.title()
+
+
 _ANIM_FPS = 60
 _ANIM_MS = 1000 // _ANIM_FPS
 _ANIM_DURATION = 220          # ms total animation duration
@@ -41,14 +111,15 @@ _BASE_CSS = """
     background-color: rgba(0, 0, 0, 0.55);
 }
 .group-label {
-    color: rgba(255, 255, 255, 0.55);
+    color: rgba(255, 255, 255, 0.75);
     font-size: 11px;
     font-weight: bold;
-    letter-spacing: 1px;
+    letter-spacing: 0.5px;
 }
 .tile {
     padding: 8px;
     border-radius: 8px;
+    /* TODO 3: tiles must be fully opaque — set in per-tile CSS */
 }
 .tile-class {
     color: rgba(255, 255, 255, 0.55);
@@ -68,7 +139,7 @@ _BASE_CSS = """
     border-radius: 4px;
 }
 .tile-bar {
-    background-color: rgba(0, 0, 0, 0.55);
+    background-color: rgba(15, 15, 20, 0.92);
     border-radius: 0 0 8px 8px;
     padding: 4px 6px;
 }
@@ -82,6 +153,20 @@ _BASE_CSS = """
 }
 .stack-icon {
     border-radius: 8px;
+}
+/* TODO 4/5: base tile border + hover highlight */
+.tile-screenshot {
+    border-radius: 8px;
+    border: 1px solid rgba(61, 174, 233, 0.35);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+.tile-screenshot:hover {
+    border-color: rgba(61, 174, 233, 0.9);
+    box-shadow: 0 2px 12px rgba(61, 174, 233, 0.3);
+}
+.tile-focused {
+    border: 2px solid rgba(61, 174, 233, 1.0) !important;
+    box-shadow: 0 0 10px rgba(61, 174, 233, 0.5) !important;
 }
 """
 
@@ -192,6 +277,7 @@ class Stack:
         widgets: list[TileWidget],
         icon_widget: Gtk.Widget,
         label_widget: Gtk.Label,
+        title_widget: Gtk.Label,
         cell_x: float, cell_y: float, cell_w: float, cell_h: float,
         screen_w: float, screen_h: float,
     ) -> None:
@@ -199,6 +285,7 @@ class Stack:
         self.widgets = widgets
         self.icon_widget = icon_widget
         self.label_widget = label_widget
+        self.title_widget = title_widget   # shows hovered window title below label
         self.cell_x = cell_x
         self.cell_y = cell_y
         self.cell_w = cell_w
@@ -380,16 +467,31 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             self._fixed.put(icon_widget, icon_x, icon_y)
 
             # Label centered below icon
-            label = Gtk.Label(label=cls)
+            label = Gtk.Label(label=_display_name(cls))
             label.add_css_class("group-label")
             label.set_halign(Gtk.Align.CENTER)
-            label.set_max_width_chars(16)
-            label.set_ellipsize(3)
-            label_w = 120
+            label.set_max_width_chars(20)
+            label.set_ellipsize(0)   # no ellipsis — names are short
+            label_w = 140
             self._fixed.put(
                 label,
                 icon_x + _ICON_SIZE / 2 - label_w / 2,
                 icon_y + _ICON_SIZE + 5,
+            )
+
+            # TODO 6: window title label — shown below group label when a tile is hovered.
+            # Starts hidden; updated when cursor enters any tile in this stack.
+            title_lbl = Gtk.Label(label="")
+            title_lbl.add_css_class("tile-title")
+            title_lbl.set_halign(Gtk.Align.CENTER)
+            title_lbl.set_max_width_chars(32)
+            title_lbl.set_ellipsize(3)   # end-ellipsis if too long
+            title_lbl.set_visible(False)
+            title_lbl_w = 200
+            self._fixed.put(
+                title_lbl,
+                icon_x + _ICON_SIZE / 2 - title_lbl_w / 2,
+                icon_y + _ICON_SIZE + 22,
             )
 
             stack = Stack(
@@ -397,6 +499,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 widgets=widgets,
                 icon_widget=icon_widget,
                 label_widget=label,
+                title_widget=title_lbl,
                 cell_x=cell_x, cell_y=cell_y,
                 cell_w=cell_w, cell_h=cell_h,
                 screen_w=screen_w, screen_h=screen_h,
@@ -409,12 +512,49 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
                 motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
                 w.add_controller(motion)
+                # TODO 6: per-tile hover shows window title below the stack icon
+                title_motion = Gtk.EventControllerMotion()
+                title_motion.connect(
+                    "enter",
+                    lambda *_, s=stack, tw=w: self._on_tile_hover(s, tw),
+                )
+                title_motion.connect(
+                    "leave",
+                    lambda *_, s=stack: self._on_tile_hover_end(s),
+                )
+                w.add_controller(title_motion)
 
             # Also hover on icon
             icon_motion = Gtk.EventControllerMotion()
             icon_motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
             icon_motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
             icon_widget.add_controller(icon_motion)
+
+            # Also hover on label (sits below icon, in the gap between icon and tiles)
+            label_motion = Gtk.EventControllerMotion()
+            label_motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
+            label_motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
+            label.add_controller(label_motion)
+
+            # Transparent hit-area covering the full cell to eliminate flicker gaps.
+            # This ensures the stack doesn't collapse when the cursor briefly passes
+            # through the space between the icon and exploded tiles.
+            hit = Gtk.Box()
+            hit.set_size_request(int(cell_w), int(cell_h))
+            # Completely transparent — only captures pointer events
+            hit_css = Gtk.CssProvider()
+            hit_css.load_from_data(b"box { background: transparent; }")
+            Gtk.StyleContext.add_provider_for_display(
+                Gdk.Display.get_default(), hit_css,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION - 1,
+            )
+            self._fixed.put(hit, cell_x, cell_y)
+            hit_motion = Gtk.EventControllerMotion()
+            hit_motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
+            hit_motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
+            hit.add_controller(hit_motion)
+            # Keep reference so it's not GC'd
+            stack._hit_widget = hit
 
     def _make_stack_icon(self, app_class: str) -> Gtk.Widget:
         """Create the icon widget shown at the stack center."""
@@ -452,14 +592,49 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 self._active_stack._collapse_id = 0
             self._animate_stack(self._active_stack, explode=False)
         self._active_stack = stack
+        # TODO 7: raise stack tiles to top z-order before animating
+        self._raise_stack(stack)
         self._animate_stack(stack, explode=True)
+
+    def _raise_stack(self, stack: Stack) -> None:
+        """
+        Bring all tiles in `stack` to the top of the z-order.
+        In Gtk.Fixed, z-order = insertion order. We remove each widget
+        and re-add it at the end (highest z), preserving its current position.
+        """
+        for w in stack.widgets:
+            cx = w._cur_x
+            cy = w._cur_y
+            self._fixed.remove(w)
+            self._fixed.put(w, cx, cy)
+        # Also raise icon, label, title so they sit above the tiles
+        icon = stack.icon_widget
+        icon_x = stack.cell_x + stack.cell_w / 2 - _ICON_SIZE / 2
+        icon_y = stack.cell_y + stack.cell_h / 2 - _ICON_SIZE / 2
+        self._fixed.remove(icon)
+        self._fixed.put(icon, icon_x, icon_y)
+        label = stack.label_widget
+        label_w = 140
+        label_x = icon_x + _ICON_SIZE / 2 - label_w / 2
+        label_y = icon_y + _ICON_SIZE + 5
+        self._fixed.remove(label)
+        self._fixed.put(label, label_x, label_y)
+        title = stack.title_widget
+        title_lbl_w = 200
+        self._fixed.remove(title)
+        self._fixed.put(title,
+                        icon_x + _ICON_SIZE / 2 - title_lbl_w / 2,
+                        label_y + 17)
 
     def _on_stack_leave(self, stack: Stack) -> None:
         """Called when mouse leaves any widget belonging to `stack`."""
         stack._hover_count = max(0, stack._hover_count - 1)
         if stack._hover_count > 0:
             return  # mouse moved to another widget in same stack
-        # Debounce: collapse only if mouse hasn't re-entered within 200ms
+        # Debounce: collapse only if mouse hasn't re-entered within 250ms.
+        # This prevents flicker when cursor crosses the gap between the icon
+        # and exploded tiles (both belong to the same stack but GTK fires
+        # leave+enter for each widget crossing).
         if stack._collapse_id:
             GLib.source_remove(stack._collapse_id)
 
@@ -467,10 +642,24 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             stack._collapse_id = 0
             if stack._hover_count == 0 and self._active_stack is stack:
                 self._animate_stack(stack, explode=False)
+                stack.title_widget.set_visible(False)
                 self._active_stack = None
             return False
 
-        stack._collapse_id = GLib.timeout_add(200, do_collapse)
+        stack._collapse_id = GLib.timeout_add(250, do_collapse)
+
+    # ── Tile title hover (TODO 6) ─────────────────────────────────────────────
+
+    def _on_tile_hover(self, stack: Stack, tile: TileWidget) -> None:
+        """Show the hovered window's title below the stack icon."""
+        title = tile._client.get("title", "")
+        if title:
+            stack.title_widget.set_label(title)
+            stack.title_widget.set_visible(True)
+
+    def _on_tile_hover_end(self, stack: Stack) -> None:
+        """Hide the window title when no tile is being hovered."""
+        stack.title_widget.set_visible(False)
 
     # ── Animation ─────────────────────────────────────────────────────────────
 

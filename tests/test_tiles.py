@@ -3,7 +3,7 @@ tests/test_tiles.py — Unit tests for src/tiles.py.
 Color functions are pure; TileWidget tests run headless via GDK_BACKEND=offscreen.
 """
 
-from src.tiles import _class_to_hue, _hsl_to_rgb, class_border_css, class_color_css
+from src.tiles import _class_to_hue, _hsl_to_rgb, class_color_css
 
 # ── Color helpers ──────────────────────────────────────────────────────────────
 
@@ -47,10 +47,6 @@ class TestCssFunctions:
         css = class_color_css("firefox")
         assert css.startswith("rgba(")
         assert css.endswith(")")
-
-    def test_border_css_is_rgba_string(self):
-        css = class_border_css("firefox")
-        assert css.startswith("rgba(")
 
     def test_different_apps_different_colors(self):
         assert class_color_css("firefox") != class_color_css("kitty")

@@ -57,12 +57,6 @@ def class_color_css(app_class: str, alpha: float = 0.25) -> str:
     return f"rgba({int(r * 255)}, {int(g * 255)}, {int(b * 255)}, {alpha})"
 
 
-def class_border_css(app_class: str) -> str:
-    hue = _class_to_hue(app_class)
-    r, g, b = _hsl_to_rgb(hue, 0.7, 0.55)
-    return f"rgba({int(r * 255)}, {int(g * 255)}, {int(b * 255)}, 0.85)"
-
-
 class TileWidget(Gtk.Box):
     """
     Single window tile.
@@ -97,6 +91,7 @@ class TileWidget(Gtk.Box):
         self.add_css_class(self._css_class)
 
         if pixbuf is not None and tile_w > 0 and tile_h > 0:
+            self.add_css_class("tile-screenshot")
             self._build_screenshot(pixbuf, app_class, title, tile_w, tile_h)
         else:
             self._build_colour_fill(app_class, title)
@@ -203,18 +198,28 @@ class TileWidget(Gtk.Box):
             self.remove_css_class("tile-focused")
 
     def _inject_border_css(self, app_class: str, address: str) -> None:
-        bg       = class_color_css(app_class)
-        hover_bg = class_color_css(app_class, alpha=0.42)
-        border   = class_border_css(app_class)
+        # TODO 3: full opacity — use solid app colour background, no transparency
+        bg       = class_color_css(app_class, alpha=1.0)
+        hover_bg = class_color_css(app_class, alpha=0.85)
+        # TODO 4: Hyprland-style border (rgba(3daee9ff) = #3daee9)
+        # TODO 5: hover highlight — smooth blue border on hover
         cls      = f"tile-addr-{address.replace('0x', '')}"
         css = f"""
         .{cls} {{
             background-color: {bg};
-            border: 2px solid {border};
+            border: 1px solid rgba(61, 174, 233, 0.35);
             border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
         }}
-        .{cls}:hover {{ background-color: {hover_bg}; }}
-        .{cls}.tile-focused {{ border: 2px solid white; background-color: {hover_bg}; }}
+        .{cls}:hover {{
+            background-color: {hover_bg};
+            border-color: rgba(61, 174, 233, 0.9);
+            box-shadow: 0 2px 12px rgba(61, 174, 233, 0.3);
+        }}
+        .{cls}.tile-focused {{
+            border: 2px solid rgba(61, 174, 233, 1.0);
+            box-shadow: 0 0 10px rgba(61, 174, 233, 0.5);
+        }}
         """
         provider = Gtk.CssProvider()
         provider.load_from_data(css.encode())
