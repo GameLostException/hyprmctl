@@ -164,16 +164,17 @@ _BASE_CSS = """
 /* TODO 4/5: base tile border + hover highlight */
 .tile-screenshot {
     border-radius: 8px;
-    border: 1px solid rgba(61, 174, 233, 0.35);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+    border-width: 1px;
+    border-style: solid;
+    border-color: rgba(61, 174, 233, 0.35);
 }
 .tile-screenshot:hover {
     border-color: rgba(61, 174, 233, 0.9);
-    box-shadow: 0 2px 12px rgba(61, 174, 233, 0.3);
 }
 .tile-focused {
-    border: 2px solid rgba(61, 174, 233, 1.0) !important;
-    box-shadow: 0 0 10px rgba(61, 174, 233, 0.5) !important;
+    border-width: 2px;
+    border-style: solid;
+    border-color: rgba(61, 174, 233, 1.0);
 }
 """
 

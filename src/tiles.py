@@ -220,27 +220,24 @@ class TileWidget(Gtk.Box):
             self.remove_css_class("tile-focused")
 
     def _inject_border_css(self, app_class: str, address: str) -> None:
-        # TODO 3: full opacity — use solid app colour background, no transparency
         bg       = class_color_css(app_class, alpha=1.0)
         hover_bg = class_color_css(app_class, alpha=0.85)
-        # TODO 4: Hyprland-style border (rgba(3daee9ff) = #3daee9)
-        # TODO 5: hover highlight — smooth blue border on hover
         cls      = f"tile-addr-{address.replace('0x', '')}"
         css = f"""
         .{cls} {{
             background-color: {bg};
-            border: 1px solid rgba(61, 174, 233, 0.35);
+            border-width: 1px;
+            border-style: solid;
+            border-color: rgba(61, 174, 233, 0.35);
             border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
         }}
         .{cls}:hover {{
             background-color: {hover_bg};
             border-color: rgba(61, 174, 233, 0.9);
-            box-shadow: 0 2px 12px rgba(61, 174, 233, 0.3);
         }}
         .{cls}.tile-focused {{
-            border: 2px solid rgba(61, 174, 233, 1.0);
-            box-shadow: 0 0 10px rgba(61, 174, 233, 0.5);
+            border-width: 2px;
+            border-color: rgba(61, 174, 233, 1.0);
         }}
         """
         provider = Gtk.CssProvider()
