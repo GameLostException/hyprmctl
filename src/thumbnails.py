@@ -4,18 +4,18 @@ src/thumbnails.py — Non-disruptive window capture daemon.
 Design principles:
   - NEVER focus or move windows
   - NEVER disrupt the user's GUI
-  - Capture only when a window is already on top (active)
-  - Light on CPU: one capture per event, no polling loops
+  - Light on CPU: rolling capture, one window per ~1.1s
+  - Zero disk writes: hyprshot pipes PNG to stdout → GdkPixbuf in RAM
 
 How it works:
-  1. activewindowv2 event  → capture the newly active window immediately
-                             (it's already on top, grim gets correct content)
-  2. openwindow event      → schedule capture of the new window
-                             (it just opened, likely on top)
-  3. 10s refresh timer     → re-capture the currently active window only
-                             (keeps the active window fresh, zero disruption)
+  1. Rolling loop     → cycles through all visible windows one by one,
+                        active workspace first. Full cycle ≈ 22s for 20 windows.
+  2. activewindowv2   → immediate capture when a window gains focus
+  3. openwindow       → immediate capture when a new window opens
 
-Monocle windows not yet visited: colour-fill tile — acceptable, correct.
+Uses hyprshot (hyprshot/hyprshot.c) — a small C binary that reads any
+window's framebuffer via hyprland-toplevel-export-v1, regardless of
+Z-order or monocle stacking. No grim, no focus switching.
 """
 
 from __future__ import annotations
