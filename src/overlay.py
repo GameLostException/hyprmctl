@@ -112,11 +112,19 @@ def _display_name(app_class: str) -> str:
     return name.title()
 
 
-_ANIM_FPS = 60
-_ANIM_MS = 1000 // _ANIM_FPS
-_ANIM_DURATION = 220          # ms total animation duration
-_ANIM_STEPS = _ANIM_DURATION // _ANIM_MS
-_ICON_SIZE = 56               # app icon px at stack center
+_ANIM_FPS  = 60
+_ANIM_MS   = 1000 // _ANIM_FPS
+_ICON_SIZE = 56    # app icon px at stack center
+
+# Spring physics constants
+# Explode: stiff spring, slight overshoot — snappy pop-out
+_SPRING_EXPLODE_STIFFNESS = 320.0   # higher = faster
+_SPRING_EXPLODE_DAMPING   = 22.0    # lower = more overshoot (critical ≈ 2√k)
+# Collapse: overdamped — quick clean snap-back, no bounce
+_SPRING_COLLAPSE_STIFFNESS = 400.0
+_SPRING_COLLAPSE_DAMPING   = 36.0
+# Stop threshold: distance in px below which we snap to target
+_SPRING_THRESHOLD = 0.4
 
 _BASE_CSS = """
 .mc-root {
@@ -190,14 +198,23 @@ _BASE_CSS = """
 }
 """
 
-# ── Easing ────────────────────────────────────────────────────────────────────
+# ── Spring physics ────────────────────────────────────────────────────────────
 
-def _ease_out_cubic(t: float) -> float:
-    return 1 - (1 - t) ** 3
+def _spring_tick(
+    pos: float, vel: float, target: float,
+    stiffness: float, damping: float, dt: float,
+) -> tuple[float, float]:
+    """
+    One step of a damped spring integrator (semi-implicit Euler).
+    Returns (new_pos, new_vel).
 
-
-def _ease_in_cubic(t: float) -> float:
-    return t ** 3
+    F = -k * displacement - d * velocity
+    """
+    displacement = pos - target
+    force        = -stiffness * displacement - damping * vel
+    new_vel      = vel + force * dt
+    new_pos      = pos + new_vel * dt
+    return new_pos, new_vel
 
 
 # ── Explosion geometry ────────────────────────────────────────────────────────
@@ -310,6 +327,8 @@ class Stack:
         self.cell_y = cell_y
         self.cell_w = cell_w
         self.cell_h = cell_h
+        self.screen_w = screen_w
+        self.screen_h = screen_h
 
         # Icon center (explosion origin)
         self.icon_cx = cell_x + cell_w / 2
@@ -336,16 +355,23 @@ class Stack:
             tw, th,
             arc_start, arc_span,
         )
-        # Convert center positions to top-left
-        self.exploded_pos = [
-            (px - tw / 2, py - th / 2)
-            for px, py in raw_positions
-        ]
+        # Convert center positions to top-left, then clamp to screen bounds
+        # so tiles with large cells (few stacks) never explode off-screen.
+        _EDGE_MARGIN = 8.0   # minimum distance from screen edge (px)
+        self.exploded_pos = []
+        for px, py in raw_positions:
+            tlx = px - tw / 2
+            tly = py - th / 2
+            tlx = max(_EDGE_MARGIN, min(tlx, screen_w - tw - _EDGE_MARGIN))
+            tly = max(_EDGE_MARGIN, min(tly, screen_h - th - _EDGE_MARGIN))
+            self.exploded_pos.append((tlx, tly))
 
         self.exploded = False
         self._anim_id = 0
         self._hover_count = 0   # widgets in this stack currently under cursor
         self._collapse_id = 0   # pending collapse GLib source id
+        # Per-widget spring velocities (vx, vy) — reset each time animation starts
+        self._vel: list[list[float]] = [[0.0, 0.0] for _ in widgets]
 
 
 # ── Overlay window ────────────────────────────────────────────────────────────
@@ -687,36 +713,63 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
     # ── Animation ─────────────────────────────────────────────────────────────
 
     def _animate_stack(self, stack: Stack, explode: bool) -> None:
-        """Start a smooth position animation for the stack."""
+        """
+        Animate stack tiles using spring physics.
+
+        Explode: stiff spring with slight overshoot — tiles pop out naturally.
+        Collapse: overdamped spring — quick clean snap-back, no bounce.
+
+        Velocities are preserved across mid-animation reversals so the motion
+        is always continuous (no jarring direction jump).
+        """
         if stack._anim_id:
             GLib.source_remove(stack._anim_id)
             stack._anim_id = 0
 
-        # Always animate FROM current widget positions (handles mid-anim reversal)
-        from_pos = [(w._cur_x, w._cur_y) for w in stack.widgets]
-        to_pos   = stack.exploded_pos if explode else \
-                   [(w._orig_x, w._orig_y) for w in stack.widgets]
+        to_pos = (
+            stack.exploded_pos if explode
+            else [(w._orig_x, w._orig_y) for w in stack.widgets]
+        )
 
-        step = [0]
-        ease = _ease_out_cubic if explode else _ease_in_cubic
+        stiffness = _SPRING_EXPLODE_STIFFNESS if explode else _SPRING_COLLAPSE_STIFFNESS
+        damping   = _SPRING_EXPLODE_DAMPING   if explode else _SPRING_COLLAPSE_DAMPING
+        dt        = _ANIM_MS / 1000.0
+
+        # On direction reversal, inherit current velocity (continuous motion).
+        # On fresh start (vel was [0,0]), spring launches from rest.
 
         def tick():
-            step[0] += 1
-            t = min(step[0] / _ANIM_STEPS, 1.0)
-            et = ease(t)
+            all_settled = True
+            for i, (w, (tx, ty)) in enumerate(zip(stack.widgets, to_pos)):
+                vx, vy = stack._vel[i]
 
-            for w, (fx, fy), (tx, ty) in zip(stack.widgets, from_pos, to_pos):
-                nx = fx + (tx - fx) * et
-                ny = fy + (ty - fy) * et
+                nx, vx = _spring_tick(w._cur_x, vx, tx, stiffness, damping, dt)
+                ny, vy = _spring_tick(w._cur_y, vy, ty, stiffness, damping, dt)
+
+                stack._vel[i] = [vx, vy]
                 self._fixed.move(w, nx, ny)
                 w._cur_x = nx
                 w._cur_y = ny
 
-            if t < 1.0:
-                stack._anim_id = GLib.timeout_add(_ANIM_MS, tick)
-            else:
+                # Settled when both position and velocity are negligible
+                if (abs(nx - tx) > _SPRING_THRESHOLD or
+                        abs(ny - ty) > _SPRING_THRESHOLD or
+                        abs(vx) > _SPRING_THRESHOLD or
+                        abs(vy) > _SPRING_THRESHOLD):
+                    all_settled = False
+
+            if all_settled:
+                # Snap exactly to target and zero velocity
+                for i, (w, (tx, ty)) in enumerate(zip(stack.widgets, to_pos)):
+                    self._fixed.move(w, tx, ty)
+                    w._cur_x = tx
+                    w._cur_y = ty
+                    stack._vel[i] = [0.0, 0.0]
                 stack._anim_id = 0
                 stack.exploded = explode
+                return False
+
+            stack._anim_id = GLib.timeout_add(_ANIM_MS, tick)
             return False
 
         stack._anim_id = GLib.timeout_add(_ANIM_MS, tick)
