@@ -121,3 +121,19 @@ class TestComputeLayout:
             assert t.y > -50
             assert t.x + t.w < self.W + 50
             assert t.y + t.h < self.H + 50
+
+    def test_title_at_top_default(self):
+        """With default FAN_STEP_Y > 0 (fan goes down/SE), title should be at top."""
+        from src.layout import FAN_STEP_Y
+        clients = [make_client(f"0x{i}", "kitty") for i in range(3)]
+        tiles = compute_layout(clients, self.W, self.H)
+        expected = FAN_STEP_Y >= 0
+        for t in tiles:
+            assert t.title_at_top == expected
+
+    def test_title_at_top_consistent_within_stack(self):
+        """All tiles in the same stack must agree on title placement."""
+        clients = [make_client(f"0x{i}", "chrome") for i in range(4)]
+        tiles = compute_layout(clients, self.W, self.H)
+        values = {t.title_at_top for t in tiles}
+        assert len(values) == 1  # all same

@@ -140,8 +140,15 @@ _BASE_CSS = """
 }
 .tile-bar {
     background-color: rgba(15, 15, 20, 0.92);
-    border-radius: 0 0 8px 8px;
     padding: 4px 6px;
+}
+/* Title bar at bottom of tile (default / fan-down) */
+.tile-bar-bottom {
+    border-radius: 0 0 8px 8px;
+}
+/* Title bar at top of tile (fan-up / 1h30) */
+.tile-bar-top {
+    border-radius: 8px 8px 0 0;
 }
 .tile-bar-title {
     color: rgba(255, 255, 255, 0.92);
@@ -433,6 +440,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 pixbuf=pixbuf,
                 tile_w=int(tile_geo.w),
                 tile_h=int(tile_geo.h),
+                title_at_top=tile_geo.title_at_top,
             )
             widget.set_size_request(int(tile_geo.w), int(tile_geo.h))
             widget._orig_x = tile_geo.x

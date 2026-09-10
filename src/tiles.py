@@ -63,11 +63,14 @@ class TileWidget(Gtk.Box):
 
     Parameters
     ----------
-    client:   hyprctl client dict
-    on_click: called with address string on click
-    pixbuf:   GdkPixbuf screenshot — enables screenshot mode
-    tile_w:   allocated tile width (required for screenshot scaling)
-    tile_h:   allocated tile height (required for screenshot scaling)
+    client:       hyprctl client dict
+    on_click:     called with address string on click
+    pixbuf:       GdkPixbuf screenshot — enables screenshot mode
+    tile_w:       allocated tile width (required for screenshot scaling)
+    tile_h:       allocated tile height (required for screenshot scaling)
+    title_at_top: if True, title bar is placed at top of tile;
+                  if False, at bottom. Determined by fan direction so the
+                  title always sticks out from under the next stacked tile.
     """
 
     def __init__(
@@ -77,6 +80,7 @@ class TileWidget(Gtk.Box):
         pixbuf: GdkPixbuf.Pixbuf | None = None,
         tile_w: int = 0,
         tile_h: int = 0,
+        title_at_top: bool = True,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._client = client
@@ -92,9 +96,9 @@ class TileWidget(Gtk.Box):
 
         if pixbuf is not None and tile_w > 0 and tile_h > 0:
             self.add_css_class("tile-screenshot")
-            self._build_screenshot(pixbuf, app_class, title, tile_w, tile_h)
+            self._build_screenshot(pixbuf, app_class, title, tile_w, tile_h, title_at_top)
         else:
-            self._build_colour_fill(app_class, title)
+            self._build_colour_fill(app_class, title, title_at_top)
             self._inject_border_css(app_class, address)
 
         if on_click is not None:
@@ -112,6 +116,7 @@ class TileWidget(Gtk.Box):
         title: str,
         tile_w: int,
         tile_h: int,
+        title_at_top: bool,
     ) -> None:
         img_h = max(tile_h - _BAR_H, 1)
 
@@ -124,11 +129,12 @@ class TileWidget(Gtk.Box):
         pic = Gtk.Picture.new_for_paintable(tex)
         pic.set_can_shrink(False)
         pic.set_size_request(tile_w, img_h)
-        self.append(pic)
 
-        # Title bar below screenshot
+        # Title bar: icon + window title
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         bar.add_css_class("tile-bar")
+        # Rounded corners follow bar position: top bar → top radius, bottom → bottom
+        bar.add_css_class("tile-bar-top" if title_at_top else "tile-bar-bottom")
         bar.set_size_request(tile_w, _BAR_H)
         bar.set_margin_start(4)
         bar.set_margin_end(4)
@@ -140,17 +146,25 @@ class TileWidget(Gtk.Box):
         lbl.set_xalign(0.0)
         lbl.add_css_class("tile-bar-title")
         bar.append(lbl)
-        self.append(bar)
+
+        # Order: bar first = top; pic first = bottom bar
+        if title_at_top:
+            self.append(bar)
+            self.append(pic)
+        else:
+            self.append(pic)
+            self.append(bar)
 
     # ── Colour-fill mode ──────────────────────────────────────────────────────
 
-    def _build_colour_fill(self, app_class: str, title: str) -> None:
+    def _build_colour_fill(self, app_class: str, title: str, title_at_top: bool) -> None:
         self.set_spacing(6)
         self.set_margin_top(6)
         self.set_margin_bottom(6)
         self.set_margin_start(8)
         self.set_margin_end(8)
 
+        # Icon + class label row
         icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         icon_row.set_halign(Gtk.Align.START)
         icon_row.append(self._make_icon(app_class, size=_ICON_SIZE))
@@ -161,7 +175,6 @@ class TileWidget(Gtk.Box):
         cls_label.set_ellipsize(3)
         cls_label.add_css_class("tile-class")
         icon_row.append(cls_label)
-        self.append(icon_row)
 
         title_label = Gtk.Label(label=title)
         title_label.set_halign(Gtk.Align.START)
@@ -170,11 +183,20 @@ class TileWidget(Gtk.Box):
         title_label.set_max_width_chars(30)
         title_label.set_ellipsize(3)
         title_label.add_css_class("tile-title")
-        self.append(title_label)
 
         spacer = Gtk.Box()
         spacer.set_vexpand(True)
-        self.append(spacer)
+
+        # Stack order: title at top → title row, then icon+spacer at bottom
+        #              title at bottom → icon row, spacer, then title at bottom
+        if title_at_top:
+            self.append(title_label)
+            self.append(icon_row)
+            self.append(spacer)
+        else:
+            self.append(icon_row)
+            self.append(spacer)
+            self.append(title_label)
 
     # ── Shared ────────────────────────────────────────────────────────────────
 

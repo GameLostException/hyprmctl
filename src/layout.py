@@ -51,6 +51,7 @@ class TileGeometry:
     w: float
     h: float
     client: dict[str, Any]
+    title_at_top: bool = True   # True → title bar on top of tile; False → bottom
 
 
 def group_by_class(clients: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -129,6 +130,16 @@ def _place_stack(
     Place all windows in a group as a fanned stack within a cell.
     The hero (largest) window fills ~HERO_FILL of the cell.
     Other windows are placed behind it with FAN_STEP offset.
+
+    Title bar placement:
+      The fan direction is always (+FAN_STEP_X, +FAN_STEP_Y) — back tiles are
+      offset toward the top-left (negative direction) relative to the hero.
+      The *exposed* strip of each non-hero tile is the edge that sticks out
+      from under the tile in front of it:
+
+        fan_dy > 0  (fan goes down, 4h30):  top edge exposed  → title at TOP
+        fan_dy < 0  (fan goes up,  1h30):   bottom edge exposed → title at BOTTOM
+        fan_dy == 0 (pure horizontal fan):  pick top by convention
     """
     inner_w = cell_w - 2 * padding
     inner_h = cell_h - 2 * padding
@@ -157,6 +168,14 @@ def _place_stack(
     hero_x = cell_x + padding + (inner_w - hero_w - fan_reach_x) / 2 + fan_reach_x
     hero_y = cell_y + padding + (inner_h - hero_h - fan_reach_y) / 2 + fan_reach_y
 
+    # Determine title bar placement from fan direction.
+    # Back tiles are shifted by (-FAN_STEP_X * back, -FAN_STEP_Y * back) relative
+    # to the hero. The exposed edge is the one *opposite* to the fan direction:
+    #   fan_dy > 0 → back tiles are above hero → their TOP edge sticks out
+    #   fan_dy < 0 → back tiles are below hero → their BOTTOM edge sticks out
+    # (FAN_STEP_Y is always ≥ 0 in the current config, so default is top.)
+    title_at_top = FAN_STEP_Y >= 0
+
     tiles = []
     for i, client in enumerate(ordered):
         # i=0 furthest back, i=n-1 is hero (no offset)
@@ -175,6 +194,7 @@ def _place_stack(
             w=tw,
             h=th,
             client=client,
+            title_at_top=title_at_top,
         ))
 
     return tiles
