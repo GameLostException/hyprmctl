@@ -116,6 +116,18 @@ def _display_name(app_class: str) -> str:
 _ANIM_FPS  = 60
 _ANIM_MS   = 1000 // _ANIM_FPS
 _ICON_SIZE = 56    # app icon px at stack center
+_SHADOW_PAD = 18   # extra pixels around tile for shadow bleed
+
+# ── Cairo shadow helper ───────────────────────────────────────────────────────
+
+def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
+    """Add a rounded rectangle path to a Cairo context."""
+    cr.new_sub_path()
+    cr.arc(x + r,     y + r,     r, math.pi,       1.5 * math.pi)
+    cr.arc(x + w - r, y + r,     r, 1.5 * math.pi, 2 * math.pi)
+    cr.arc(x + w - r, y + h - r, r, 0,             0.5 * math.pi)
+    cr.arc(x + r,     y + h - r, r, 0.5 * math.pi, math.pi)
+    cr.close_path()
 
 # Spring physics constants
 # Explode: stiff spring, slight overshoot — snappy pop-out
@@ -180,10 +192,9 @@ _BASE_CSS = """
 .stack-icon {
     border-radius: 8px;
 }
-/* Manual drop shadow behind each tile */
+/* Manual drop shadow behind each tile (drawn via Cairo DrawingArea) */
 .tile-shadow {
-    background-color: rgba(0, 0, 0, 0.45);
-    border-radius: 10px;
+    background-color: transparent;
 }
 /* No border at rest — blue on hover and keyboard focus */
 .tile-screenshot {
@@ -483,6 +494,52 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         )
         return self._dim_alpha < self._dim_target  # False = stop
 
+    def _make_shadow(self, tile_w: int, tile_h: int) -> Gtk.DrawingArea:
+        """
+        Create a Gtk.DrawingArea that paints a blurred drop shadow using Cairo.
+        The shadow extends SHADOW_PAD pixels beyond the tile on each side.
+        Rendered once and cached — no per-frame repaint needed.
+        """
+        import cairo as _cairo  # type: ignore[import]
+
+        PAD    = _SHADOW_PAD
+        RADIUS = 8.0    # tile border-radius
+        BLUR   = 12.0   # gaussian blur radius (approx via multi-pass)
+        ALPHA  = 0.55   # shadow darkness
+
+        da_w = tile_w + PAD * 2
+        da_h = tile_h + PAD * 2
+
+        # Pre-render to an image surface so we paint a static snapshot
+        surf = _cairo.ImageSurface(_cairo.FORMAT_ARGB32, da_w, da_h)
+        ctx  = _cairo.Context(surf)
+
+        # Approximate gaussian blur: paint the rounded rect multiple times
+        # at decreasing alpha and increasing spread
+        steps = 8
+        for step in range(steps, 0, -1):
+            spread = BLUR * step / steps
+            a      = ALPHA * (1 - step / (steps + 1)) * 0.35
+            rx = PAD - spread + 4   # offset 4px right
+            ry = PAD - spread + 6   # offset 6px down (natural light from above)
+            rw = tile_w + spread * 2
+            rh = tile_h + spread * 2
+            _rounded_rect(ctx, rx, ry, rw, rh, RADIUS + spread * 0.5)
+            ctx.set_source_rgba(0, 0, 0, a)
+            ctx.fill()
+
+        da = Gtk.DrawingArea()
+        da.set_size_request(da_w, da_h)
+        da.add_css_class("tile-shadow")
+
+        # Capture surface in closure
+        def draw_fn(area, cr, w, h, _surf=surf):
+            cr.set_source_surface(_surf, 0, 0)
+            cr.paint()
+
+        da.set_draw_func(draw_fn)
+        return da
+
     # ── Setup ─────────────────────────────────────────────────────────────────
 
     def _on_mapped(self, _widget) -> None:
@@ -553,11 +610,14 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             widget._tile_w = tile_geo.w
             widget._tile_h = tile_geo.h
 
-            # Manual drop shadow: dark rounded box placed behind tile, offset 4px down-right
-            shadow = Gtk.Box()
-            shadow.set_size_request(int(tile_geo.w), int(tile_geo.h))
-            shadow.add_css_class("tile-shadow")
-            self._fixed.put(shadow, tile_geo.x + 4, tile_geo.y + 4)
+            # Blurred drop shadow: Cairo DrawingArea placed behind tile
+            shadow = self._make_shadow(int(tile_geo.w), int(tile_geo.h))
+            sx = tile_geo.x - _SHADOW_PAD
+            sy = tile_geo.y - _SHADOW_PAD
+            self._fixed.put(shadow, sx, sy)
+            widget._shadow    = shadow   # keep ref for animation
+            widget._shadow_dx = -_SHADOW_PAD   # offset from tile position
+            widget._shadow_dy = -_SHADOW_PAD
 
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
@@ -691,8 +751,12 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self._animate_stack(stack, explode=True)
 
     def _raise_stack(self, stack: Stack) -> None:
-        """Bring all tiles in `stack` to the top of the z-order."""
+        """Bring all tiles (and their shadows) to the top of the z-order."""
         for w in stack.widgets:
+            # Shadow first (lower z), then tile on top
+            if hasattr(w, "_shadow"):
+                self._fixed.remove(w._shadow)
+                self._fixed.put(w._shadow, w._cur_x + w._shadow_dx, w._cur_y + w._shadow_dy)
             cx = w._cur_x
             cy = w._cur_y
             self._fixed.remove(w)
@@ -769,6 +833,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
                 stack._vel[i] = [vx, vy]
                 self._fixed.move(w, nx, ny)
+                if hasattr(w, "_shadow"):
+                    self._fixed.move(w._shadow, nx + w._shadow_dx, ny + w._shadow_dy)
                 w._cur_x = nx
                 w._cur_y = ny
 
@@ -783,6 +849,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 # Snap exactly to target and zero velocity
                 for i, (w, (tx, ty)) in enumerate(zip(stack.widgets, to_pos)):
                     self._fixed.move(w, tx, ty)
+                    if hasattr(w, "_shadow"):
+                        self._fixed.move(w._shadow, tx + w._shadow_dx, ty + w._shadow_dy)
                     w._cur_x = tx
                     w._cur_y = ty
                     stack._vel[i] = [0.0, 0.0]
