@@ -3,8 +3,8 @@ src/tiles.py — GTK4 tile widget for a single window.
 
 Two render modes:
   Screenshot: pixbuf pre-scaled to exact tile_w × tile_h, rendered via
-              Gtk.Image (reliable in Gtk.Fixed). Dark title bar below image.
-  Colour-fill: app HSL colour background + icon + class + title.
+              Gtk.Image (reliable in Gtk.Fixed). Dark title bar.
+  Colour-fill: app HSL colour background + centered icon + app name + full title.
                Used when no pixbuf available.
 """
 
@@ -63,14 +63,17 @@ class TileWidget(Gtk.Box):
 
     Parameters
     ----------
-    client:       hyprctl client dict
-    on_click:     called with address string on click
-    pixbuf:       GdkPixbuf screenshot — enables screenshot mode
-    tile_w:       allocated tile width (required for screenshot scaling)
-    tile_h:       allocated tile height (required for screenshot scaling)
-    title_at_top: if True, title bar is placed at top of tile;
-                  if False, at bottom. Determined by fan direction so the
-                  title always sticks out from under the next stacked tile.
+    client:        hyprctl client dict
+    on_click:      called with address string on click
+    pixbuf:        GdkPixbuf screenshot — enables screenshot mode
+    tile_w:        allocated tile width (required for screenshot scaling)
+    tile_h:        allocated tile height (required for screenshot scaling)
+    title_at_top:  if True, title bar at top; False = bottom.
+                   Derived from fan direction so the bar is always on the
+                   exposed edge, not covered by the tile stacked above.
+    display_name:  human-readable app name (e.g. "Thunar", "PulseAudio")
+                   shown in colour-fill mode. Passed from overlay so the
+                   same _display_name() lookup is used everywhere.
     """
 
     def __init__(
@@ -81,6 +84,7 @@ class TileWidget(Gtk.Box):
         tile_w: int = 0,
         tile_h: int = 0,
         title_at_top: bool = True,
+        display_name: str = "",
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._client = client
@@ -89,6 +93,8 @@ class TileWidget(Gtk.Box):
         app_class = client.get("class") or client.get("initialClass") or "unknown"
         title     = client.get("title") or "(no title)"
         address   = client.get("address", "")
+        # Fall back to title-cased class if caller didn't supply a display name
+        app_name  = display_name or app_class.replace("-", " ").title()
 
         self._css_class = f"tile-addr-{address.replace('0x', '')}"
         self.add_css_class("tile")
@@ -96,9 +102,9 @@ class TileWidget(Gtk.Box):
 
         if pixbuf is not None and tile_w > 0 and tile_h > 0:
             self.add_css_class("tile-screenshot")
-            self._build_screenshot(pixbuf, app_class, title, tile_w, tile_h, title_at_top)
+            self._build_screenshot(pixbuf, app_class, app_name, title, tile_w, tile_h, title_at_top)
         else:
-            self._build_colour_fill(app_class, title, title_at_top)
+            self._build_colour_fill(app_class, app_name, title, title_at_top)
             self._inject_border_css(app_class, address)
 
         if on_click is not None:
@@ -113,6 +119,7 @@ class TileWidget(Gtk.Box):
         self,
         pixbuf: GdkPixbuf.Pixbuf,
         app_class: str,
+        app_name: str,
         title: str,
         tile_w: int,
         tile_h: int,
@@ -120,20 +127,15 @@ class TileWidget(Gtk.Box):
     ) -> None:
         img_h = max(tile_h - _BAR_H, 1)
 
-        # Pre-scale to exact tile dimensions
         scaled = pixbuf.scale_simple(tile_w, img_h, 2)  # BILINEAR
-
-        # Gdk.Texture → Gtk.Picture with can_shrink=False is the only
-        # approach that reliably renders in Gtk.Fixed under GTK4.14+
         tex = Gdk.Texture.new_for_pixbuf(scaled)
         pic = Gtk.Picture.new_for_paintable(tex)
         pic.set_can_shrink(False)
         pic.set_size_request(tile_w, img_h)
 
-        # Title bar: icon + window title
+        # Title bar: icon + FULL window title (no ellipsis, no class label)
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         bar.add_css_class("tile-bar")
-        # Rounded corners follow bar position: top bar → top radius, bottom → bottom
         bar.add_css_class("tile-bar-top" if title_at_top else "tile-bar-bottom")
         bar.set_size_request(tile_w, _BAR_H)
         bar.set_margin_start(4)
@@ -141,13 +143,12 @@ class TileWidget(Gtk.Box):
         bar.append(self._make_icon(app_class, size=18))
 
         lbl = Gtk.Label(label=title)
-        lbl.set_ellipsize(3)
+        lbl.set_ellipsize(0)       # no ellipsis — show full title
         lbl.set_hexpand(True)
         lbl.set_xalign(0.0)
         lbl.add_css_class("tile-bar-title")
         bar.append(lbl)
 
-        # Order: bar first = top; pic first = bottom bar
         if title_at_top:
             self.append(bar)
             self.append(pic)
@@ -157,45 +158,46 @@ class TileWidget(Gtk.Box):
 
     # ── Colour-fill mode ──────────────────────────────────────────────────────
 
-    def _build_colour_fill(self, app_class: str, title: str, title_at_top: bool) -> None:
-        self.set_spacing(6)
-        self.set_margin_top(6)
-        self.set_margin_bottom(6)
+    def _build_colour_fill(
+        self, app_class: str, app_name: str, title: str, title_at_top: bool
+    ) -> None:
+        self.set_spacing(4)
+        self.set_margin_top(8)
+        self.set_margin_bottom(8)
         self.set_margin_start(8)
         self.set_margin_end(8)
 
-        # Icon + class label row
-        icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        icon_row.set_halign(Gtk.Align.START)
-        icon_row.append(self._make_icon(app_class, size=_ICON_SIZE))
+        # Centered column: icon + app name (no raw class label)
+        center_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        center_col.set_halign(Gtk.Align.CENTER)
+        center_col.set_valign(Gtk.Align.CENTER)
+        center_col.set_hexpand(True)
+        center_col.set_vexpand(True)
 
-        cls_label = Gtk.Label(label=app_class)
-        cls_label.set_halign(Gtk.Align.START)
-        cls_label.set_valign(Gtk.Align.CENTER)
-        cls_label.set_ellipsize(3)
-        cls_label.add_css_class("tile-class")
-        icon_row.append(cls_label)
+        icon = self._make_icon(app_class, size=_ICON_SIZE)
+        icon.set_halign(Gtk.Align.CENTER)
+        center_col.append(icon)
 
+        name_label = Gtk.Label(label=app_name)
+        name_label.set_halign(Gtk.Align.CENTER)
+        name_label.set_ellipsize(3)
+        name_label.add_css_class("tile-class")   # reuse same style (muted white)
+        center_col.append(name_label)
+
+        # Full window title — no ellipsis
         title_label = Gtk.Label(label=title)
-        title_label.set_halign(Gtk.Align.START)
+        title_label.set_halign(Gtk.Align.CENTER)
         title_label.set_wrap(True)
         title_label.set_wrap_mode(2)
-        title_label.set_max_width_chars(30)
-        title_label.set_ellipsize(3)
+        title_label.set_ellipsize(0)   # no ellipsis — show full title
         title_label.add_css_class("tile-title")
 
-        spacer = Gtk.Box()
-        spacer.set_vexpand(True)
-
-        # Stack order: title at top → title row, then icon+spacer at bottom
-        #              title at bottom → icon row, spacer, then title at bottom
+        # Place title at the exposed edge (opposite of the tile stacked above)
         if title_at_top:
             self.append(title_label)
-            self.append(icon_row)
-            self.append(spacer)
+            self.append(center_col)
         else:
-            self.append(icon_row)
-            self.append(spacer)
+            self.append(center_col)
             self.append(title_label)
 
     # ── Shared ────────────────────────────────────────────────────────────────

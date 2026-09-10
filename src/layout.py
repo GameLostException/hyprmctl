@@ -32,11 +32,11 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-# Fan offset per window step (px in overlay space)
-# Larger step = more separation so individual tiles are distinguishable,
-# though titles are now shown via the stack title label on hover (not on tile).
-FAN_STEP_X = 16
-FAN_STEP_Y = 12
+# Fan offset per window step (px in overlay space).
+# FAN_STEP_Y must be >= the title bar height (28px) so the bar of the tile
+# beneath is never covered by the tile stacked on top of it.
+FAN_STEP_X = 20
+FAN_STEP_Y = 30
 # Hero window fills this fraction of its cell
 HERO_FILL = 0.78
 # Minimum tile dimensions
