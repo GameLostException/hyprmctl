@@ -23,6 +23,18 @@ if os.path.exists(_LAYER_SHELL_SO) and _LAYER_SHELL_SO not in os.environ.get("LD
 _UID  = os.getuid()
 _SOCK = f"/tmp/hyprmctl-{_UID}.sock"
 
+# ── Auto-build hyprshot if missing ────────────────────────────────────────────
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_HYPRSHOT    = os.path.join(_SCRIPT_DIR, "hyprshot", "hyprshot")
+if not os.path.exists(_HYPRSHOT):
+    import subprocess
+    _hyprshot_dir = os.path.join(_SCRIPT_DIR, "hyprshot")
+    if os.path.exists(os.path.join(_hyprshot_dir, "Makefile")):
+        print("hyprmctl: building hyprshot...", flush=True)
+        r = subprocess.run(["make"], cwd=_hyprshot_dir, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"hyprmctl: hyprshot build failed:\n{r.stderr}", file=sys.stderr)
+
 
 def _send(cmd: str) -> bool:
     """Send a command to the running daemon. Returns True if delivered."""
