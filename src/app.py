@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
 import threading
 
 import gi
@@ -41,12 +42,9 @@ class MissionControlApp(Gtk.Application):
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _on_activate(self, app: Gtk.Application) -> None:
-        # activate fires on first run — just show the overlay if --show was passed
-        # (hyprmctl.py passes sys.argv which may contain --show)
-        import sys
+        # activate fires on first run — show overlay if --show was passed
         if "--show" in sys.argv:
             self._show_overlay()
-        # Otherwise do nothing — wait for IPC socket command
 
     # ── IPC socket ────────────────────────────────────────────────────────────
 

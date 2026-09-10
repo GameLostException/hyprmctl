@@ -7,3 +7,5 @@ coverage.xml
 *.egg-info/
 dist/
 build/
+# hyprshot compiled binary (built locally, not committed)
+hyprshot/hyprshot

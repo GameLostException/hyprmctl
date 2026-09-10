@@ -108,6 +108,15 @@ A 200ms debounce handles brief cursor gaps.
 | `python-gobject` | PyGObject / GI bindings |
 | `gtk4` | GTK4 toolkit |
 | `gtk4-layer-shell` | Wayland layer surface (includes `Gtk4LayerShell-1.0` GIR) |
+| `wayland-client` | Required to build `hyprshot` |
+| `libpng` | Required to build `hyprshot` |
+
+### Build hyprshot (required, one-time)
+
+```bash
+cd ~/Lab/hyprmctl/hyprshot
+make
+```
 
 All available via `pacman` on Arch/Hyprland.
 

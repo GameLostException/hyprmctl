@@ -236,7 +236,6 @@ class Stack:
         ]
 
         self.exploded = False
-        self._anim_step = 0
         self._anim_id = 0
         self._hover_count = 0   # widgets in this stack currently under cursor
         self._collapse_id = 0   # pending collapse GLib source id
@@ -324,15 +323,10 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             self._show_empty("No windows on this workspace")
             return
 
-        # Serve from cache immediately — no blocking capture.
-        # Kick off background warm() for any uncached windows so they appear
-        # next time the overlay is opened.
+        # Serve from cache — tiles show colour-fill if not yet captured.
+        # The rolling daemon will fill them in on next open.
         from src.thumbnails import get_cache
         cache = get_cache()
-        uncached = [c["address"] for c in clients if cache.get(c["address"]) is None]
-        if uncached:
-            cache.warm(uncached)
-
         thumbnails = {c["address"]: cache.get(c["address"]) for c in clients}
         tiles = compute_layout(clients, log_w, log_h, padding=52, gap=14)
         self._build_stacks(tiles, log_w, log_h, thumbnails)
@@ -546,10 +540,12 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
     # ── Event handlers ────────────────────────────────────────────────────────
 
     def _on_tile_click(self, address: str) -> None:
+        """Focus the clicked window and close the overlay (without quitting the daemon)."""
         client = next(
             (t._client for t in self._tiles if t._client.get("address") == address),
             None,
         )
+        # Warp cursor to target window center so follow_mouse refocuses correctly
         batch = ""
         if client:
             at = client.get("at", [0, 0])
@@ -560,7 +556,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         batch += f"dispatch focuswindow address:{address}"
         self.set_visible(False)
         subprocess.run(["hyprctl", "--batch", batch], capture_output=True)
-        self.get_application().quit()
+        self.close()  # close overlay only — daemon stays alive via hold()
 
     def _on_bg_click(self, gesture, n_press, x, y) -> None:
         widget = self.pick(x, y, Gtk.PickFlags.DEFAULT)

@@ -157,7 +157,27 @@ Stack
 
 ---
 
-## Planned phases
+## TODO (before next phase)
+
+1. **Stack label** — app name under icon shows "..." — should be clean app name
+   (e.g. "Thunar", "Kitty"). Centered under icon, not truncated.
+
+2. **Explosion flicker** — when cursor is between the icon and exploded windows,
+   the animation oscillates between exploded and collapsed indefinitely. Fix hover
+   debounce / enter-leave detection so mid-path cursor doesn't trigger collapse.
+
+3. **Window opacity** — tiles must be 100% opaque. No transparency on the tile itself.
+
+4. **Tile border** — thin shadowed border matching Hyprland's active window border
+   colour (currently `rgba(3daee9ff)`), like windows look on the regular screen.
+
+5. **Hover highlight** — hovering any tile (exploded or single-window stack) smoothly
+   borders it blue (focus colour). Border removed on mouse-out.
+
+6. **Readable titles in stack** — when fanned/exploded, window title bars must not
+   overlap each other. Fan offset must be large enough that all titles are visible.
+
+---
 
 ### Phase 5.2 — Window state completeness 🔲
 
