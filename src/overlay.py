@@ -136,16 +136,16 @@ def _make_shadow_texture(
     tile_w: int, tile_h: int,
 ) -> Gdk.Texture:
     """
-    Pre-render a uniform blurred drop shadow to a Gdk.Texture once.
-    Shadow is symmetric on all 4 sides — no directional offset.
+    Uniform drop shadow — identical bleed on all 4 sides.
+    Uses a single rounded rect stroked at decreasing widths from the edge inward,
+    so every side gets the same treatment.
     """
     import cairo as _cairo
 
     PAD    = _SHADOW_PAD
     RADIUS = 8.0
-    BLUR   = 8.0    # blur spread in px
-    ALPHA  = 0.28   # subtle — not overpowering
-    STEPS  = 8
+    STEPS  = 12
+    ALPHA  = 0.18   # subtle per-step alpha
 
     da_w = tile_w + PAD * 2
     da_h = tile_h + PAD * 2
@@ -153,15 +153,18 @@ def _make_shadow_texture(
     surf = _cairo.ImageSurface(_cairo.FORMAT_ARGB32, da_w, da_h)
     ctx  = _cairo.Context(surf)
 
-    # Symmetric: rect centered exactly at PAD,PAD — no x/y offset
-    for step in range(STEPS, 0, -1):
-        spread = BLUR * step / STEPS
-        a      = ALPHA * step / STEPS / STEPS * 2.5
-        rx = PAD - spread
-        ry = PAD - spread
-        rw = tile_w + spread * 2
-        rh = tile_h + spread * 2
-        _rounded_rect(ctx, rx, ry, rw, rh, RADIUS + spread * 0.3)
+    # Paint from outermost ring inward — each step strictly symmetric
+    for step in range(STEPS):
+        inset = PAD * step / STEPS           # how far in from edge
+        # Smooth falloff: strongest near tile edge, fades to 0 at PAD distance
+        t = 1.0 - step / STEPS              # 1.0 at edge, 0.0 at PAD
+        a = ALPHA * t * t                    # quadratic falloff
+        rx = inset
+        ry = inset
+        rw = da_w - inset * 2
+        rh = da_h - inset * 2
+        r  = RADIUS + (PAD - inset) * 0.3
+        _rounded_rect(ctx, rx, ry, rw, rh, max(r, 0.5))
         ctx.set_source_rgba(0, 0, 0, a)
         ctx.fill()
 
