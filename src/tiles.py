@@ -100,6 +100,7 @@ class TileWidget(Gtk.Box):
 
         self._css_class = f"tile-addr-{address.replace('0x', '')}"
         self.add_css_class("tile")
+        self.add_css_class("card")          # Adwaita .card gives drop shadow
         self.add_css_class(self._css_class)
 
         if pixbuf is not None and tile_w > 0 and tile_h > 0:

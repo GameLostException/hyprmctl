@@ -19,10 +19,11 @@ import subprocess
 import gi
 
 gi.require_version("Gdk", "4.0")
+gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gtk4LayerShell", "1.0")
 
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
 from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
 
 from src.hypr import get_active_monitor, get_active_workspace_clients  # noqa: E402
@@ -128,7 +129,7 @@ _SPRING_THRESHOLD = 0.4
 
 _BASE_CSS = """
 .mc-root {
-    background-color: rgba(0, 0, 0, 0.55);
+    background-color: transparent;
 }
 .group-label {
     color: rgba(255, 255, 255, 0.75);
@@ -417,6 +418,61 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self._built = False  # guard against multiple map events
         self.connect("map", self._on_mapped)
 
+    def _build_background(self, monitor: dict, log_w: int, log_h: int) -> None:
+        """
+        Capture the current desktop (wallpaper + windows) via grim,
+        apply a cheap blur by downscaling then upscaling, darken slightly,
+        and place it as the first (bottom z-order) widget in _fixed.
+        Falls back to semi-transparent black if grim fails.
+        """
+        import subprocess
+        mon_name = monitor.get("name", "")
+        try:
+            r = subprocess.run(
+                ["grim", "-o", mon_name, "-"],
+                capture_output=True, timeout=3.0,
+            )
+            if r.returncode != 0 or not r.stdout:
+                raise RuntimeError("grim failed")
+
+            loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+            loader.write(r.stdout)
+            loader.close()
+            pb = loader.get_pixbuf()
+            if pb is None:
+                raise RuntimeError("no pixbuf")
+
+            # Cheap blur: scale down to 1/8 then back up to full size
+            # GdkPixbuf BILINEAR interpolation blurs at this ratio
+            bw = max(1, pb.get_width()  // 8)
+            bh = max(1, pb.get_height() // 8)
+            blurred = pb.scale_simple(bw, bh, 2)           # BILINEAR down
+            blurred = blurred.scale_simple(log_w, log_h, 2)  # BILINEAR up
+
+            # Darken by compositing a semi-transparent black overlay onto pixbuf
+            # Use GdkPixbuf composite: source=black, alpha=120/255 ≈ 47% dark
+            black = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, log_w, log_h)
+            black.fill(0x00000078)  # RGBA: black at alpha=0x78=120
+            black.composite(
+                blurred, 0, 0, log_w, log_h, 0, 0, 1.0, 1.0,
+                GdkPixbuf.InterpType.NEAREST, 120,
+            )
+
+            tex = Gdk.Texture.new_for_pixbuf(blurred)
+            pic = Gtk.Picture.new_for_paintable(tex)
+            pic.set_can_shrink(False)
+            pic.set_size_request(log_w, log_h)
+            self._fixed.put(pic, 0, 0)
+
+        except Exception:
+            # Fallback: dark overlay via CSS on root
+            provider = Gtk.CssProvider()
+            provider.load_from_data(b".mc-root { background-color: rgba(0,0,0,0.6); }")
+            Gtk.StyleContext.add_provider_for_display(
+                Gdk.Display.get_default(), provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            )
+
     # ── Setup ─────────────────────────────────────────────────────────────────
 
     def _on_mapped(self, _widget) -> None:
@@ -443,6 +499,9 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         scale = monitor.get("scale", 1.0)
         log_w = int(mon_w / scale)
         log_h = int(mon_h / scale)
+
+        # Background: blurred desktop screenshot (wallpaper shows through)
+        self._build_background(monitor, log_w, log_h)
 
         clients = get_active_workspace_clients()
         if not clients:
