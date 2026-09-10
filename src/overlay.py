@@ -179,16 +179,11 @@ _BASE_CSS = """
 .stack-icon {
     border-radius: 8px;
 }
-/* Screenshot tiles: no visible border at rest, subtle glow on hover/focus */
+/* No border at rest — blue on hover and keyboard focus */
 .tile-screenshot {
     border-radius: 8px;
-    border-width: 1px;
-    border-style: solid;
-    border-color: transparent;
 }
-.tile-screenshot:hover {
-    border-color: rgba(61, 174, 233, 0.75);
-}
+.tile-screenshot:hover,
 .tile-focused {
     border-width: 2px;
     border-style: solid;

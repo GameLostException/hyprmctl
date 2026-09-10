@@ -228,17 +228,13 @@ class TileWidget(Gtk.Box):
         css = f"""
         .{cls} {{
             background-color: {bg};
-            border-width: 1px;
-            border-style: solid;
-            border-color: rgba(61, 174, 233, 0.35);
             border-radius: 8px;
         }}
-        .{cls}:hover {{
-            background-color: {hover_bg};
-            border-color: rgba(61, 174, 233, 0.9);
-        }}
+        .{cls}:hover,
         .{cls}.tile-focused {{
+            background-color: {hover_bg};
             border-width: 2px;
+            border-style: solid;
             border-color: rgba(61, 174, 233, 1.0);
         }}
         """
