@@ -180,6 +180,11 @@ _BASE_CSS = """
 .stack-icon {
     border-radius: 8px;
 }
+/* Manual drop shadow behind each tile */
+.tile-shadow {
+    background-color: rgba(0, 0, 0, 0.45);
+    border-radius: 10px;
+}
 /* No border at rest — blue on hover and keyboard focus */
 .tile-screenshot {
     border-radius: 8px;
@@ -308,7 +313,6 @@ class Stack:
         widgets: list[TileWidget],
         icon_widget: Gtk.Widget,
         label_widget: Gtk.Label,
-        title_widget: Gtk.Label,
         cell_x: float, cell_y: float, cell_w: float, cell_h: float,
         screen_w: float, screen_h: float,
     ) -> None:
@@ -316,7 +320,6 @@ class Stack:
         self.widgets = widgets
         self.icon_widget = icon_widget
         self.label_widget = label_widget
-        self.title_widget = title_widget   # shows hovered window title below label
         self.cell_x = cell_x
         self.cell_y = cell_y
         self.cell_w = cell_w
@@ -420,58 +423,65 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
     def _build_background(self, monitor: dict, log_w: int, log_h: int) -> None:
         """
-        Capture the current desktop (wallpaper + windows) via grim,
-        apply a cheap blur by downscaling then upscaling, darken slightly,
-        and place it as the first (bottom z-order) widget in _fixed.
-        Falls back to semi-transparent black if grim fails.
+        Load the current waypaper wallpaper and place it as background.
+        Then fade in a dark overlay on top so tiles are readable.
+        Falls back to solid dark if wallpaper can't be loaded.
         """
-        import subprocess
-        mon_name = monitor.get("name", "")
+        import configparser
+        import os
+
+        wallpaper_path = ""
         try:
-            r = subprocess.run(
-                ["grim", "-o", mon_name, "-"],
-                capture_output=True, timeout=3.0,
+            cfg = configparser.ConfigParser()
+            cfg.read(os.path.expanduser("~/.config/waypaper/config.ini"))
+            wallpaper_path = os.path.expanduser(
+                cfg.get("Settings", "wallpaper", fallback="")
             )
-            if r.returncode != 0 or not r.stdout:
-                raise RuntimeError("grim failed")
-
-            loader = GdkPixbuf.PixbufLoader.new_with_type("png")
-            loader.write(r.stdout)
-            loader.close()
-            pb = loader.get_pixbuf()
-            if pb is None:
-                raise RuntimeError("no pixbuf")
-
-            # Cheap blur: scale down to 1/8 then back up to full size
-            # GdkPixbuf BILINEAR interpolation blurs at this ratio
-            bw = max(1, pb.get_width()  // 8)
-            bh = max(1, pb.get_height() // 8)
-            blurred = pb.scale_simple(bw, bh, 2)           # BILINEAR down
-            blurred = blurred.scale_simple(log_w, log_h, 2)  # BILINEAR up
-
-            # Darken by compositing a semi-transparent black overlay onto pixbuf
-            # Use GdkPixbuf composite: source=black, alpha=120/255 ≈ 47% dark
-            black = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, log_w, log_h)
-            black.fill(0x00000078)  # RGBA: black at alpha=0x78=120
-            black.composite(
-                blurred, 0, 0, log_w, log_h, 0, 0, 1.0, 1.0,
-                GdkPixbuf.InterpType.NEAREST, 120,
-            )
-
-            tex = Gdk.Texture.new_for_pixbuf(blurred)
-            pic = Gtk.Picture.new_for_paintable(tex)
-            pic.set_can_shrink(False)
-            pic.set_size_request(log_w, log_h)
-            self._fixed.put(pic, 0, 0)
-
         except Exception:
-            # Fallback: dark overlay via CSS on root
-            provider = Gtk.CssProvider()
-            provider.load_from_data(b".mc-root { background-color: rgba(0,0,0,0.6); }")
-            Gtk.StyleContext.add_provider_for_display(
-                Gdk.Display.get_default(), provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-            )
+            pass
+
+        if wallpaper_path and os.path.exists(wallpaper_path):
+            try:
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                    wallpaper_path, log_w, log_h, False
+                )
+                tex = Gdk.Texture.new_for_pixbuf(pb)
+                pic = Gtk.Picture.new_for_paintable(tex)
+                pic.set_can_shrink(False)
+                pic.set_size_request(log_w, log_h)
+                self._fixed.put(pic, 0, 0)
+            except Exception:
+                wallpaper_path = ""  # fall through to solid fallback
+
+        # Dark overlay widget that fades in on top of the wallpaper
+        # (or is the sole background if wallpaper failed)
+        dim = Gtk.Box()
+        dim.set_size_request(log_w, log_h)
+        dim_css = Gtk.CssProvider()
+        dim_css.load_from_data(b".mc-dim { background-color: rgba(0,0,0,0); }")
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), dim_css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+        dim.add_css_class("mc-dim")
+        self._fixed.put(dim, 0, 0)
+        self._dim_widget = dim
+        self._dim_alpha  = 0.0
+        self._dim_target = 0.52 if wallpaper_path else 0.72
+        # Kick off fade-in
+        GLib.timeout_add(16, self._fade_dim)
+
+    def _fade_dim(self) -> bool:
+        """Incrementally increase the dim overlay opacity (fade-in)."""
+        self._dim_alpha = min(self._dim_alpha + 0.04, self._dim_target)
+        css = f".mc-dim {{ background-color: rgba(0,0,0,{self._dim_alpha:.3f}); }}".encode()
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+        )
+        return self._dim_alpha < self._dim_target  # False = stop
 
     # ── Setup ─────────────────────────────────────────────────────────────────
 
@@ -542,6 +552,13 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             widget._cur_y  = tile_geo.y
             widget._tile_w = tile_geo.w
             widget._tile_h = tile_geo.h
+
+            # Manual drop shadow: dark rounded box placed behind tile, offset 4px down-right
+            shadow = Gtk.Box()
+            shadow.set_size_request(int(tile_geo.w), int(tile_geo.h))
+            shadow.add_css_class("tile-shadow")
+            self._fixed.put(shadow, tile_geo.x + 4, tile_geo.y + 4)
+
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
 
@@ -580,26 +597,14 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 icon_y + _ICON_SIZE + 5,
             )
 
-            # TODO 6: window title label — shown below group label when a tile is hovered.
-            # Starts hidden; updated when cursor enters any tile in this stack.
-            title_lbl = Gtk.Label(label="")
-            title_lbl.add_css_class("tile-title")
-            title_lbl.set_halign(Gtk.Align.CENTER)
-            title_lbl.set_ellipsize(0)   # no ellipsis — never show "..." on empty
-            title_lbl.set_visible(False)
-            title_lbl_w = 200
-            self._fixed.put(
-                title_lbl,
-                icon_x + _ICON_SIZE / 2 - title_lbl_w / 2,
-                icon_y + _ICON_SIZE + 22,
-            )
+            # TODO 6: window title label removed — tiles already carry their name
+            # in the title bar; the stack icon label shows the app name.
 
             stack = Stack(
                 app_class=cls,
                 widgets=widgets,
                 icon_widget=icon_widget,
                 label_widget=label,
-                title_widget=title_lbl,
                 cell_x=cell_x, cell_y=cell_y,
                 cell_w=cell_w, cell_h=cell_h,
                 screen_w=screen_w, screen_h=screen_h,
@@ -612,17 +617,6 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
                 motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
                 w.add_controller(motion)
-                # TODO 6: per-tile hover shows window title below the stack icon
-                title_motion = Gtk.EventControllerMotion()
-                title_motion.connect(
-                    "enter",
-                    lambda *_, s=stack, tw=w: self._on_tile_hover(s, tw),
-                )
-                title_motion.connect(
-                    "leave",
-                    lambda *_, s=stack: self._on_tile_hover_end(s),
-                )
-                w.add_controller(title_motion)
 
             # Also hover on icon
             icon_motion = Gtk.EventControllerMotion()
@@ -697,17 +691,13 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self._animate_stack(stack, explode=True)
 
     def _raise_stack(self, stack: Stack) -> None:
-        """
-        Bring all tiles in `stack` to the top of the z-order.
-        In Gtk.Fixed, z-order = insertion order. We remove each widget
-        and re-add it at the end (highest z), preserving its current position.
-        """
+        """Bring all tiles in `stack` to the top of the z-order."""
         for w in stack.widgets:
             cx = w._cur_x
             cy = w._cur_y
             self._fixed.remove(w)
             self._fixed.put(w, cx, cy)
-        # Also raise icon, label, title so they sit above the tiles
+        # Also raise icon and label
         icon = stack.icon_widget
         icon_x = stack.cell_x + stack.cell_w / 2 - _ICON_SIZE / 2
         icon_y = stack.cell_y + stack.cell_h / 2 - _ICON_SIZE / 2
@@ -719,12 +709,6 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         label_y = icon_y + _ICON_SIZE + 5
         self._fixed.remove(label)
         self._fixed.put(label, label_x, label_y)
-        title = stack.title_widget
-        title_lbl_w = 200
-        self._fixed.remove(title)
-        self._fixed.put(title,
-                        icon_x + _ICON_SIZE / 2 - title_lbl_w / 2,
-                        label_y + 17)
 
     def _on_stack_leave(self, stack: Stack) -> None:
         """Called when mouse leaves any widget belonging to `stack`."""
@@ -742,24 +726,10 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             stack._collapse_id = 0
             if stack._hover_count == 0 and self._active_stack is stack:
                 self._animate_stack(stack, explode=False)
-                stack.title_widget.set_visible(False)
                 self._active_stack = None
             return False
 
         stack._collapse_id = GLib.timeout_add(250, do_collapse)
-
-    # ── Tile title hover (TODO 6) ─────────────────────────────────────────────
-
-    def _on_tile_hover(self, stack: Stack, tile: TileWidget) -> None:
-        """Show the hovered window's title below the stack icon."""
-        title = tile._client.get("title", "")
-        if title:
-            stack.title_widget.set_label(title)
-            stack.title_widget.set_visible(True)
-
-    def _on_tile_hover_end(self, stack: Stack) -> None:
-        """Hide the window title when no tile is being hovered."""
-        stack.title_widget.set_visible(False)
 
     # ── Animation ─────────────────────────────────────────────────────────────
 
