@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import subprocess
+from functools import lru_cache as _lru_cache
 
 import gi
 
@@ -116,7 +117,7 @@ def _display_name(app_class: str) -> str:
 _ANIM_FPS  = 60
 _ANIM_MS   = 1000 // _ANIM_FPS
 _ICON_SIZE = 56    # app icon px at stack center
-_SHADOW_PAD = 18   # extra pixels around tile for shadow bleed
+_SHADOW_PAD = 10   # extra pixels around tile for shadow bleed
 
 # ── Cairo shadow helper ───────────────────────────────────────────────────────
 
@@ -128,6 +129,56 @@ def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
     cr.arc(x + w - r, y + h - r, r, 0,             0.5 * math.pi)
     cr.arc(x + r,     y + h - r, r, 0.5 * math.pi, math.pi)
     cr.close_path()
+
+
+@_lru_cache(maxsize=32)
+def _make_shadow_texture(
+    tile_w: int, tile_h: int,
+) -> Gdk.Texture:
+    """
+    Pre-render a blurred drop shadow to a Gdk.Texture once at build time.
+    Zero cost during animation — just a static image moved with Gtk.Fixed.move().
+    """
+    import cairo as _cairo
+
+    PAD    = _SHADOW_PAD
+    RADIUS = 8.0
+    BLUR   = 6.0    # tighter blur — closer to Hyprland default
+    ALPHA  = 0.5
+    STEPS  = 6      # passes (fewer = faster pre-render)
+
+    da_w = tile_w + PAD * 2
+    da_h = tile_h + PAD * 2
+
+    surf = _cairo.ImageSurface(_cairo.FORMAT_ARGB32, da_w, da_h)
+    ctx  = _cairo.Context(surf)
+
+    for step in range(STEPS, 0, -1):
+        spread = BLUR * step / STEPS
+        a      = ALPHA * (1.0 - (step - 1) / STEPS) / STEPS * 2.2
+        # Offset: 3px right, 4px down — matches Hyprland's default shadow offset
+        rx = PAD - spread + 3
+        ry = PAD - spread + 4
+        rw = tile_w + spread * 2
+        rh = tile_h + spread * 2
+        _rounded_rect(ctx, rx, ry, rw, rh, RADIUS + spread * 0.4)
+        ctx.set_source_rgba(0, 0, 0, a)
+        ctx.fill()
+
+    surf.flush()
+    # Cairo ARGB32 is BGRA premultiplied; convert row-by-row to RGBA for GdkPixbuf
+    src  = surf.get_data()
+    n    = da_w * da_h
+    rgba = bytearray(n * 4)
+    for i in range(n):
+        b, g, r, a_v = src[i*4], src[i*4+1], src[i*4+2], src[i*4+3]
+        rgba[i*4], rgba[i*4+1], rgba[i*4+2], rgba[i*4+3] = r, g, b, a_v
+
+    pb = GdkPixbuf.Pixbuf.new_from_bytes(
+        GLib.Bytes.new(bytes(rgba)),
+        GdkPixbuf.Colorspace.RGB, True, 8, da_w, da_h, da_w * 4,
+    )
+    return Gdk.Texture.new_for_pixbuf(pb)
 
 # Spring physics constants
 # Explode: stiff spring, slight overshoot — snappy pop-out
@@ -494,51 +545,19 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         )
         return self._dim_alpha < self._dim_target  # False = stop
 
-    def _make_shadow(self, tile_w: int, tile_h: int) -> Gtk.DrawingArea:
+    def _make_shadow(self, tile_w: int, tile_h: int) -> Gtk.Picture:
         """
-        Create a Gtk.DrawingArea that paints a blurred drop shadow using Cairo.
-        The shadow extends SHADOW_PAD pixels beyond the tile on each side.
-        Rendered once and cached — no per-frame repaint needed.
+        Create a shadow widget from a pre-rendered Gdk.Texture.
+        Computed once at build time — zero cost during animation.
         """
-        import cairo as _cairo  # type: ignore[import]
-
-        PAD    = _SHADOW_PAD
-        RADIUS = 8.0    # tile border-radius
-        BLUR   = 12.0   # gaussian blur radius (approx via multi-pass)
-        ALPHA  = 0.55   # shadow darkness
-
-        da_w = tile_w + PAD * 2
-        da_h = tile_h + PAD * 2
-
-        # Pre-render to an image surface so we paint a static snapshot
-        surf = _cairo.ImageSurface(_cairo.FORMAT_ARGB32, da_w, da_h)
-        ctx  = _cairo.Context(surf)
-
-        # Approximate gaussian blur: paint the rounded rect multiple times
-        # at decreasing alpha and increasing spread
-        steps = 8
-        for step in range(steps, 0, -1):
-            spread = BLUR * step / steps
-            a      = ALPHA * (1 - step / (steps + 1)) * 0.35
-            rx = PAD - spread + 4   # offset 4px right
-            ry = PAD - spread + 6   # offset 6px down (natural light from above)
-            rw = tile_w + spread * 2
-            rh = tile_h + spread * 2
-            _rounded_rect(ctx, rx, ry, rw, rh, RADIUS + spread * 0.5)
-            ctx.set_source_rgba(0, 0, 0, a)
-            ctx.fill()
-
-        da = Gtk.DrawingArea()
-        da.set_size_request(da_w, da_h)
-        da.add_css_class("tile-shadow")
-
-        # Capture surface in closure
-        def draw_fn(area, cr, w, h, _surf=surf):
-            cr.set_source_surface(_surf, 0, 0)
-            cr.paint()
-
-        da.set_draw_func(draw_fn)
-        return da
+        tex = _make_shadow_texture(tile_w, tile_h)
+        da_w = tile_w + _SHADOW_PAD * 2
+        da_h = tile_h + _SHADOW_PAD * 2
+        pic = Gtk.Picture.new_for_paintable(tex)
+        pic.set_can_shrink(False)
+        pic.set_size_request(da_w, da_h)
+        pic.add_css_class("tile-shadow")
+        return pic
 
     # ── Setup ─────────────────────────────────────────────────────────────────
 
