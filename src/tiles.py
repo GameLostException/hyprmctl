@@ -107,7 +107,9 @@ class TileWidget(Gtk.Box):
             self.add_css_class("tile-screenshot")
             self._build_screenshot(pixbuf, app_class, app_name, title, tile_w, tile_h, title_at_top)
         else:
-            self._build_colour_fill(app_class, app_name, title, title_at_top)
+            # Colour-fill: tile is a transparent click/hover target only.
+            # Icon + label are placed directly in Gtk.Fixed by overlay.py
+            # at exact center coords — guaranteed centering without GTK layout fights.
             self._inject_border_css(app_class, address)
 
         if on_click is not None:

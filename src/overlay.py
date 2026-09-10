@@ -117,7 +117,7 @@ def _display_name(app_class: str) -> str:
 _ANIM_FPS  = 60
 _ANIM_MS   = 1000 // _ANIM_FPS
 _ICON_SIZE = 56    # app icon px at stack center
-_SHADOW_PAD = 10   # extra pixels around tile for shadow bleed
+_SHADOW_PAD = 6    # extra pixels around tile for shadow bleed
 
 # ── Cairo shadow helper ───────────────────────────────────────────────────────
 
@@ -616,12 +616,30 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             sx = tile_geo.x - _SHADOW_PAD
             sy = tile_geo.y - _SHADOW_PAD
             self._fixed.put(shadow, sx, sy)
-            widget._shadow    = shadow   # keep ref for animation
-            widget._shadow_dx = -_SHADOW_PAD   # offset from tile position
+            widget._shadow    = shadow
+            widget._shadow_dx = -_SHADOW_PAD
             widget._shadow_dy = -_SHADOW_PAD
 
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
+
+            # For colour-fill tiles: place icon+label directly in _fixed
+            # at the tile's center — bypasses GTK layout entirely for perfect centering
+            if thumbnails.get(addr) is None:
+                center_widget = self._make_tile_center(
+                    cls, _display_name(cls),
+                    int(tile_geo.w), int(tile_geo.h),
+                )
+                cw_nat = center_widget.get_preferred_size()[1].width
+                ch_nat = center_widget.get_preferred_size()[1].height
+                cx = tile_geo.x + tile_geo.w / 2 - cw_nat / 2
+                cy = tile_geo.y + tile_geo.h / 2 - ch_nat / 2
+                self._fixed.put(center_widget, cx, cy)
+                widget._center_widget  = center_widget
+                widget._center_tile_w  = tile_geo.w
+                widget._center_tile_h  = tile_geo.h
+            else:
+                widget._center_widget = None
 
             cls = tile_geo.client.get("class") or "unknown"
             tile_widgets[cls].append(widget)
@@ -711,7 +729,32 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             # Keep reference so it's not GC'd
             stack._hit_widget = hit
 
-    def _make_stack_icon(self, app_class: str) -> Gtk.Widget:
+    def _make_tile_center(
+        self, app_class: str, app_name: str, tile_w: int, tile_h: int
+    ) -> Gtk.Box:
+        """
+        Icon + pill label for a colour-fill tile.
+        Placed directly in _fixed at exact center coords — no GTK layout dependency.
+        """
+        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        col.set_halign(Gtk.Align.CENTER)
+
+        icon = self._make_stack_icon(app_class, size=32)
+        icon.set_halign(Gtk.Align.CENTER)
+        col.append(icon)
+
+        pill = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        pill.set_halign(Gtk.Align.CENTER)
+        pill.add_css_class("name-pill")
+
+        lbl = Gtk.Label(label=app_name)
+        lbl.add_css_class("name-pill-text")
+        pill.append(lbl)
+        col.append(pill)
+
+        return col
+
+    def _make_stack_icon(self, app_class: str, size: int = _ICON_SIZE) -> Gtk.Widget:
         """Create the icon widget shown at the stack center."""
         icon_name = resolve_icon_name(app_class)
         if icon_name:
@@ -752,9 +795,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self._animate_stack(stack, explode=True)
 
     def _raise_stack(self, stack: Stack) -> None:
-        """Bring all tiles (and their shadows) to the top of the z-order."""
+        """Bring all tiles (shadows, center widgets) to the top of the z-order."""
         for w in stack.widgets:
-            # Shadow first (lower z), then tile on top
             if hasattr(w, "_shadow"):
                 self._fixed.remove(w._shadow)
                 self._fixed.put(w._shadow, w._cur_x + w._shadow_dx, w._cur_y + w._shadow_dy)
@@ -762,6 +804,14 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             cy = w._cur_y
             self._fixed.remove(w)
             self._fixed.put(w, cx, cy)
+            if getattr(w, "_center_widget", None) is not None:
+                cw = w._center_tile_w
+                ch = w._center_tile_h
+                nat = w._center_widget.get_preferred_size()[1]
+                ccx = cx + cw / 2 - nat.width / 2
+                ccy = cy + ch / 2 - nat.height / 2
+                self._fixed.remove(w._center_widget)
+                self._fixed.put(w._center_widget, ccx, ccy)
         # Also raise icon and label
         icon = stack.icon_widget
         icon_x = stack.cell_x + stack.cell_w / 2 - _ICON_SIZE / 2
@@ -836,10 +886,16 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 self._fixed.move(w, nx, ny)
                 if hasattr(w, "_shadow"):
                     self._fixed.move(w._shadow, nx + w._shadow_dx, ny + w._shadow_dy)
+                if getattr(w, "_center_widget", None) is not None:
+                    cw = w._center_tile_w
+                    ch = w._center_tile_h
+                    nat = w._center_widget.get_preferred_size()[1]
+                    cx = nx + cw / 2 - nat.width / 2
+                    cy = ny + ch / 2 - nat.height / 2
+                    self._fixed.move(w._center_widget, cx, cy)
                 w._cur_x = nx
                 w._cur_y = ny
 
-                # Settled when both position and velocity are negligible
                 if (abs(nx - tx) > _SPRING_THRESHOLD or
                         abs(ny - ty) > _SPRING_THRESHOLD or
                         abs(vx) > _SPRING_THRESHOLD or
@@ -847,11 +903,17 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                     all_settled = False
 
             if all_settled:
-                # Snap exactly to target and zero velocity
                 for i, (w, (tx, ty)) in enumerate(zip(stack.widgets, to_pos)):
                     self._fixed.move(w, tx, ty)
                     if hasattr(w, "_shadow"):
                         self._fixed.move(w._shadow, tx + w._shadow_dx, ty + w._shadow_dy)
+                    if getattr(w, "_center_widget", None) is not None:
+                        cw = w._center_tile_w
+                        ch = w._center_tile_h
+                        nat = w._center_widget.get_preferred_size()[1]
+                        cx = tx + cw / 2 - nat.width / 2
+                        cy = ty + ch / 2 - nat.height / 2
+                        self._fixed.move(w._center_widget, cx, cy)
                     w._cur_x = tx
                     w._cur_y = ty
                     stack._vel[i] = [0.0, 0.0]
