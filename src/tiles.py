@@ -52,8 +52,10 @@ def _hsl_to_rgb(h: float, s: float, lightness: float) -> tuple[float, float, flo
 
 
 def class_color_css(app_class: str, alpha: float = 0.25) -> str:
+    """Muted dark tint of the app's hue — used as colour-fill background."""
     hue = _class_to_hue(app_class)
-    r, g, b = _hsl_to_rgb(hue, 0.55, 0.45)
+    # Keep saturation low and lightness dark so it doesn't look like a coloured border
+    r, g, b = _hsl_to_rgb(hue, 0.25, 0.18)
     return f"rgba({int(r * 255)}, {int(g * 255)}, {int(b * 255)}, {alpha})"
 
 
