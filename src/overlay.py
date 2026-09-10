@@ -137,9 +137,7 @@ _BASE_CSS = """
     letter-spacing: 0.5px;
 }
 .tile {
-    padding: 8px;
     border-radius: 8px;
-    /* TODO 3: tiles must be fully opaque — set in per-tile CSS */
 }
 .tile-class {
     color: rgba(255, 255, 255, 0.55);
@@ -181,15 +179,15 @@ _BASE_CSS = """
 .stack-icon {
     border-radius: 8px;
 }
-/* TODO 4/5: base tile border + hover highlight */
+/* Screenshot tiles: no visible border at rest, subtle glow on hover/focus */
 .tile-screenshot {
     border-radius: 8px;
     border-width: 1px;
     border-style: solid;
-    border-color: rgba(61, 174, 233, 0.35);
+    border-color: transparent;
 }
 .tile-screenshot:hover {
-    border-color: rgba(61, 174, 233, 0.9);
+    border-color: rgba(61, 174, 233, 0.75);
 }
 .tile-focused {
     border-width: 2px;
