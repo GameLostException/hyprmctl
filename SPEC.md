@@ -177,6 +177,10 @@ Stack
 6. **Readable titles in stack** — when fanned/exploded, window title bars must not
    overlap each other. Fan offset must be large enough that all titles are visible.
 
+7. **Z-order on explosion** — when a stack explodes, all its tiles must be raised
+   above every other stack's tiles. Currently exploded windows may appear behind
+   tiles from adjacent stacks.
+
 ---
 
 ### Phase 5.2 — Window state completeness 🔲
