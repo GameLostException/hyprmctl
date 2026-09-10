@@ -585,8 +585,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             title_lbl = Gtk.Label(label="")
             title_lbl.add_css_class("tile-title")
             title_lbl.set_halign(Gtk.Align.CENTER)
-            title_lbl.set_max_width_chars(32)
-            title_lbl.set_ellipsize(3)   # end-ellipsis if too long
+            title_lbl.set_ellipsize(0)   # no ellipsis — never show "..." on empty
             title_lbl.set_visible(False)
             title_lbl_w = 200
             self._fixed.put(

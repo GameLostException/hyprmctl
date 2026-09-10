@@ -164,14 +164,12 @@ class TileWidget(Gtk.Box):
     def _build_colour_fill(
         self, app_class: str, app_name: str, title: str, title_at_top: bool
     ) -> None:
-        self.set_spacing(4)
-        self.set_margin_top(8)
-        self.set_margin_bottom(8)
-        self.set_margin_start(8)
-        self.set_margin_end(8)
+        # No margins on the outer box — let center_col fill the tile completely
+        self.set_halign(Gtk.Align.FILL)
+        self.set_valign(Gtk.Align.FILL)
 
-        # Centered column: icon + app name (no raw class label)
-        center_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        # Single centered column: icon + app name, dead-center in tile
+        center_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         center_col.set_halign(Gtk.Align.CENTER)
         center_col.set_valign(Gtk.Align.CENTER)
         center_col.set_hexpand(True)
@@ -183,25 +181,12 @@ class TileWidget(Gtk.Box):
 
         name_label = Gtk.Label(label=app_name)
         name_label.set_halign(Gtk.Align.CENTER)
-        name_label.set_ellipsize(3)
-        name_label.add_css_class("tile-class")   # reuse same style (muted white)
+        name_label.set_ellipsize(0)
+        name_label.add_css_class("tile-class")
         center_col.append(name_label)
 
-        # Full window title — no ellipsis
-        title_label = Gtk.Label(label=title)
-        title_label.set_halign(Gtk.Align.CENTER)
-        title_label.set_wrap(True)
-        title_label.set_wrap_mode(2)
-        title_label.set_ellipsize(0)   # no ellipsis — show full title
-        title_label.add_css_class("tile-title")
-
-        # Place title at the exposed edge (opposite of the tile stacked above)
-        if title_at_top:
-            self.append(title_label)
-            self.append(center_col)
-        else:
-            self.append(center_col)
-            self.append(title_label)
+        self.append(center_col)
+        # Window title is shown via the stack hover label — not on tile itself
 
     # ── Shared ────────────────────────────────────────────────────────────────
 
