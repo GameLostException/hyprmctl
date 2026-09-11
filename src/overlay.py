@@ -491,6 +491,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self._tiles: list[TileWidget] = []
         self._stacks: list[Stack] = []
         self._active_stack: Stack | None = None
+        self._css_providers: list[Gtk.CssProvider] = []   # per-tile providers to clean up
 
         key_ctrl = Gtk.EventControllerKey()
         key_ctrl.connect("key-pressed", self._on_key_pressed)
@@ -644,6 +645,9 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
+            # Track per-tile CSS provider for cleanup on close
+            if getattr(widget, "_css_provider", None) is not None:
+                self._css_providers.append(widget._css_provider)
 
             # For colour-fill tiles: place icon+label directly in _fixed
             # at the tile's center — bypasses GTK layout entirely for perfect centering
@@ -967,7 +971,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
     # ── Event handlers ────────────────────────────────────────────────────────
 
     def cancel_all_animations(self) -> None:
-        """Cancel all pending GLib timers before the overlay is destroyed."""
+        """Cancel all pending GLib timers and clean up CSS before the overlay is destroyed."""
         for stack in self._stacks:
             if stack._anim_id:
                 GLib.source_remove(stack._anim_id)
@@ -975,6 +979,14 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             if stack._collapse_id:
                 GLib.source_remove(stack._collapse_id)
                 stack._collapse_id = 0
+        # Remove per-tile colour-fill CSS providers from the display.
+        # If not removed, address-based CSS classes persist across overlay sessions
+        # and cause stale background/border colours on subsequent opens.
+        display = Gdk.Display.get_default()
+        if display is not None:
+            for provider in self._css_providers:
+                Gtk.StyleContext.remove_provider_for_display(display, provider)
+        self._css_providers.clear()
 
     def _on_tile_click(self, address: str) -> None:
         """Focus the clicked window and close the overlay (without quitting the daemon)."""

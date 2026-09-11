@@ -106,11 +106,10 @@ class TileWidget(Gtk.Box):
         if pixbuf is not None and tile_w > 0 and tile_h > 0:
             self.add_css_class("tile-screenshot")
             self._build_screenshot(pixbuf, app_class, app_name, title, tile_w, tile_h, title_at_top)
+            self._css_provider = None
         else:
-            # Colour-fill: tile is a transparent click/hover target only.
-            # Icon + label are placed directly in Gtk.Fixed by overlay.py
-            # at exact center coords — guaranteed centering without GTK layout fights.
-            self._inject_border_css(app_class, address)
+            self._build_colour_fill(app_class, app_name, title, title_at_top)
+            self._css_provider = self._inject_border_css(app_class, address)
 
         if on_click is not None:
             click_ctrl = Gtk.GestureClick()
@@ -217,7 +216,8 @@ class TileWidget(Gtk.Box):
         else:
             self.remove_css_class("tile-focused")
 
-    def _inject_border_css(self, app_class: str, address: str) -> None:
+    def _inject_border_css(self, app_class: str, address: str) -> Gtk.CssProvider | None:
+        """Inject per-tile CSS. Returns the provider so the overlay can remove it on close."""
         bg       = class_color_css(app_class, alpha=1.0)
         hover_bg = class_color_css(app_class, alpha=0.85)
         cls      = f"tile-addr-{address.replace('0x', '')}"
@@ -241,3 +241,5 @@ class TileWidget(Gtk.Box):
             Gtk.StyleContext.add_provider_for_display(
                 display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
+            return provider
+        return None
