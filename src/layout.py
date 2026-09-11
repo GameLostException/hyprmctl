@@ -32,10 +32,10 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-# Maximum tile size as fraction of monitor dimensions
-# Prevents tiles being absurdly large when there are few stacks
-MAX_TILE_W_RATIO = 0.38   # max 38% of monitor width
-MAX_TILE_H_RATIO = 0.32   # max 32% of monitor height
+# Maximum tile size as fraction of monitor dimensions.
+# Prevents tiles being absurdly large when there are few stacks.
+MAX_TILE_W_RATIO = 0.55   # max 55% of monitor width
+MAX_TILE_H_RATIO = 0.48   # max 48% of monitor height
 
 # Fan offset per window step (px in overlay space).
 # FAN_STEP_Y must be >= the title bar height (28px) so the bar of the tile
@@ -233,11 +233,10 @@ def compute_layout(
     avail_w = float(monitor_w - 2 * padding)
     avail_h = float(monitor_h - 2 * padding)
 
-    # Max tile size: absolute cap as fraction of monitor, plus 30% reduction
-    # when there are very few stacks (tiles would otherwise fill the screen).
-    size_factor = 0.70 if n <= 2 else 1.0
-    max_tile_w = monitor_w * MAX_TILE_W_RATIO * size_factor
-    max_tile_h = monitor_h * MAX_TILE_H_RATIO * size_factor
+    # Max tile size: hard cap as fraction of monitor regardless of stack count.
+    # Prevents single-stack tiles from filling the entire screen.
+    max_tile_w = monitor_w * MAX_TILE_W_RATIO
+    max_tile_h = monitor_h * MAX_TILE_H_RATIO
 
     # Squarify into n equal cells, then shrink each by gap/2
     raw_cells = _squarify(n, avail_w, avail_h)

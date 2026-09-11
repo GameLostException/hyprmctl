@@ -627,17 +627,13 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             widget._tile_w = tile_geo.w
             widget._tile_h = tile_geo.h
 
-            # Blurred drop shadow: placed at exact tile position.
-            # The shadow texture is (tile_w + 2*PAD) × (tile_h + 2*PAD) but
-            # positioned with a negative margin so it bleeds equally on all sides.
-            # Using margin_start/top = -PAD centres the larger surface behind the tile.
+            # Blurred drop shadow: placed PAD pixels up and left of tile so the
+            # symmetric shadow texture bleeds equally on all 4 sides.
             shadow = self._make_shadow(int(tile_geo.w), int(tile_geo.h))
-            shadow.set_margin_start(-_SHADOW_PAD)
-            shadow.set_margin_top(-_SHADOW_PAD)
-            self._fixed.put(shadow, tile_geo.x, tile_geo.y)
+            self._fixed.put(shadow, tile_geo.x - _SHADOW_PAD, tile_geo.y - _SHADOW_PAD)
             widget._shadow    = shadow
-            widget._shadow_dx = 0   # same position as tile
-            widget._shadow_dy = 0
+            widget._shadow_dx = -_SHADOW_PAD
+            widget._shadow_dy = -_SHADOW_PAD
 
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
