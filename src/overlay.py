@@ -14,8 +14,9 @@ Each app class is a "stack":
 from __future__ import annotations
 
 import math
+import os
 import subprocess
-from functools import lru_cache as _lru_cache
+from configparser import ConfigParser
 
 import gi
 
@@ -30,6 +31,7 @@ from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
 from src.hypr import get_active_monitor, get_active_workspace_clients  # noqa: E402
 from src.icons import resolve_icon_name  # noqa: E402
 from src.layout import compute_layout  # noqa: E402
+from src.thumbnails import get_cache  # noqa: E402
 from src.tiles import TileWidget  # noqa: E402
 
 # ── App display name ──────────────────────────────────────────────────────────
@@ -85,13 +87,32 @@ _APP_NAMES: dict[str, str] = {
     "htop":                         "htop",
     "btop":                         "btop",
     "neofetch":                     "Neofetch",
+    "org.remmina.remmina":          "Remmina",
     "org.gnome.nautilus":           "Files",
     "org.gnome.calculator":         "Calculator",
     "org.gnome.calendar":           "Calendar",
     "org.gnome.gedit":              "gedit",
+    "org.gnome.texteditor":         "Text Editor",
+    "org.gnome.files":              "Files",
+    "org.gnome.clocks":             "Clocks",
+    "org.gnome.maps":               "Maps",
+    "org.gnome.weather":            "Weather",
+    "org.gnome.contacts":           "Contacts",
+    "org.gnome.photos":             "Photos",
+    "org.gnome.music":              "Music",
+    "org.gnome.videos":             "Videos",
+    "org.gnome.terminal":           "Terminal",
+    "org.gnome.settings":           "Settings",
     "org.kde.dolphin":              "Dolphin",
     "org.kde.okular":               "Okular",
     "org.kde.konsole":              "Konsole",
+    "org.kde.gwenview":             "Gwenview",
+    "org.kde.kwrite":               "KWrite",
+    "org.kde.kate":                 "Kate",
+    "org.kde.spectacle":            "Spectacle",
+    "org.kde.ark":                  "Ark",
+    "io.github.qalculate.qalculate-qt": "Qalculate",
+    "io.github.qalculate":          "Qalculate",
     "com.mitchellh.ghostty":        "Ghostty",
     "ghostty":                      "Ghostty",
 }
@@ -101,13 +122,22 @@ def _display_name(app_class: str) -> str:
     """
     Return a clean human-readable app name from wm_class.
     Falls back to title-cased class if no override is known.
+    For reverse-DNS style classes (e.g. Org.Remmina.Remmina), takes the
+    last non-redundant component.
     """
     lower = app_class.lower()
     if lower in _APP_NAMES:
         return _APP_NAMES[lower]
-    # Try stripping common suffixes/prefixes and title-case
+    # Reverse-DNS style: take last component, deduplicate (e.g. Remmina.Remmina → Remmina)
+    if "." in app_class:
+        parts = app_class.split(".")
+        last = parts[-1]
+        # If last component is same as second-to-last (e.g. Remmina.Remmina), use last
+        # Also skip generic suffixes like "desktop", "app"
+        if last.lower() not in ("desktop", "app", "application"):
+            return last.title() if last == last.lower() else last
+    # Plain class name: strip common suffixes and title-case
     name = app_class.replace("-", " ").replace("_", " ")
-    # Drop common redundant suffixes
     for suffix in (" desktop", " browser", " stable", " nightly"):
         if name.lower().endswith(suffix):
             name = name[: -len(suffix)]
@@ -117,7 +147,10 @@ def _display_name(app_class: str) -> str:
 _ANIM_FPS  = 60
 _ANIM_MS   = 1000 // _ANIM_FPS
 _ICON_SIZE = 56    # app icon px at stack center
-_SHADOW_PAD = 6    # extra pixels around tile for shadow bleed
+_SHADOW_PAD = 3    # extra pixels around tile for shadow bleed
+# Icon+label box dimensions — fixed size, centered on cell
+_BOX_W = 160
+_BOX_H = _ICON_SIZE + 5 + 22
 
 # ── Cairo shadow helper ───────────────────────────────────────────────────────
 
@@ -130,76 +163,15 @@ def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
     cr.arc(x + r,     y + h - r, r, 0.5 * math.pi, math.pi)
     cr.close_path()
 
-
-@_lru_cache(maxsize=32)
-def _make_shadow_texture(
-    tile_w: int, tile_h: int,
-) -> Gdk.Texture:
-    """
-    Uniform drop shadow — identical bleed on all 4 sides.
-    Uses a single rounded rect stroked at decreasing widths from the edge inward,
-    so every side gets the same treatment.
-    """
-    import cairo as _cairo
-
-    PAD    = _SHADOW_PAD
-    RADIUS = 8.0
-
-    da_w = tile_w + PAD * 2
-    da_h = tile_h + PAD * 2
-
-    surf = _cairo.ImageSurface(_cairo.FORMAT_ARGB32, da_w, da_h)
-    ctx  = _cairo.Context(surf)
-
-    # Stroke concentric rings from tile edge outward.
-    # Each ring is at distance d outside the tile, with alpha = 0.22*(1-d/PAD)^2.
-    # Using stroke (not fill) means each ring contributes independently — no
-    # double-accumulation — so all 4 sides are mathematically identical.
-    for d in range(PAD):
-        t = 1.0 - d / PAD       # 1.0 at tile edge, 0.0 at PAD
-        a = 0.22 * t * t
-        inset = PAD - d         # ring position in surface coords
-        rw = da_w - inset * 2
-        rh = da_h - inset * 2
-        r  = max(RADIUS + d * 0.15, 0.5)
-        ctx.set_line_width(1.5)
-        _rounded_rect(ctx, inset + 0.75, inset + 0.75, rw - 1.5, rh - 1.5, r)
-        ctx.set_source_rgba(0, 0, 0, a)
-        ctx.stroke()
-
-    surf.flush()
-    src = surf.get_data()
-    n   = da_w * da_h
-
-    # Fast BGRA→RGBA channel swap using numpy if available, else memoryview
-    try:
-        import numpy as np
-        arr = np.frombuffer(src, dtype=np.uint8).reshape(n, 4)
-        rgba_arr = arr[:, [2, 1, 0, 3]]  # BGRA → RGBA
-        rgba = rgba_arr.tobytes()
-    except ImportError:
-        # Fallback: memoryview swap — still pure Python but avoids per-item overhead
-        mv  = memoryview(src).cast("B")
-        raw = bytearray(mv)
-        for i in range(0, n * 4, 4):
-            raw[i], raw[i+2] = raw[i+2], raw[i]   # swap B↔R, keep G and A
-        rgba = bytes(raw)
-
-    pb = GdkPixbuf.Pixbuf.new_from_bytes(
-        GLib.Bytes.new(rgba),
-        GdkPixbuf.Colorspace.RGB, True, 8, da_w, da_h, da_w * 4,
-    )
-    return Gdk.Texture.new_for_pixbuf(pb)
-
 # Spring physics constants
-# Explode: stiff spring, slight overshoot — snappy pop-out
-_SPRING_EXPLODE_STIFFNESS = 320.0   # higher = faster
-_SPRING_EXPLODE_DAMPING   = 22.0    # lower = more overshoot (critical ≈ 2√k)
-# Collapse: overdamped — quick clean snap-back, no bounce
-_SPRING_COLLAPSE_STIFFNESS = 400.0
-_SPRING_COLLAPSE_DAMPING   = 36.0
-# Stop threshold: distance in px below which we snap to target
-_SPRING_THRESHOLD = 1.5
+# Explode: very snappy pop-out, minimal overshoot
+_SPRING_EXPLODE_STIFFNESS  = 900.0   # high stiffness = fast launch
+_SPRING_EXPLODE_DAMPING    = 45.0    # near-critical (critical ≈ 2√900 = 60) — tiny overshoot
+# Collapse: crisp snap-back, no bounce
+_SPRING_COLLAPSE_STIFFNESS = 900.0
+_SPRING_COLLAPSE_DAMPING   = 65.0    # overdamped — clean, no oscillation
+# Stop threshold: snap to target when within this many px AND velocity < threshold
+_SPRING_THRESHOLD = 0.5
 
 _BASE_CSS = """
 .mc-root {
@@ -212,6 +184,10 @@ _BASE_CSS = """
     background-color: rgba(30, 30, 30, 0.62);
     border-radius: 10px;
     padding: 2px 8px;
+}
+/* Force opaque tile background — Adwaita .card has alpha by default */
+.tile.card {
+    background-color: rgba(28, 28, 32, 1.0);
 }
 .tile {
     border-radius: 8px;
@@ -236,6 +212,7 @@ _BASE_CSS = """
 .tile-bar {
     background-color: rgba(15, 15, 20, 0.92);
     padding: 4px 6px;
+    /* padding is inside the box — doesn't add to the widget's allocated width */
 }
 /* Title bar at bottom of tile (default / fan-down) */
 .tile-bar-bottom {
@@ -253,10 +230,6 @@ _BASE_CSS = """
     color: rgba(255, 255, 255, 0.4);
     font-size: 18px;
 }
-/* Transparent hit-area for hover zone — no visual rendering */
-.hit-area {
-    background-color: transparent;
-}
 .stack-icon {
     border-radius: 8px;
 }
@@ -271,19 +244,19 @@ _BASE_CSS = """
     font-size: 11px;
     font-weight: 500;
 }
-/* Manual drop shadow behind each tile (drawn via Cairo DrawingArea) */
+/* Manual drop shadow behind each tile */
 .tile-shadow {
     background-color: transparent;
 }
-/* No border at rest — blue on hover and keyboard focus */
+/* No border at rest — blue outline managed programmatically via shadow color */
 .tile-screenshot {
     border-radius: 8px;
 }
-.tile-screenshot:hover,
 .tile-focused {
-    border-width: 2px;
-    border-style: solid;
-    border-color: rgba(61, 174, 233, 1.0);
+    outline-width: 2px;
+    outline-style: solid;
+    outline-color: rgba(61, 174, 233, 1.0);
+    outline-offset: -1px;
 }
 """
 
@@ -362,10 +335,14 @@ def _explosion_positions(
         # Single window: place directly at origin (hero)
         return [(origin_x, origin_y)]
 
-    # Radius: distance from icon center to tile center
-    # Use tile diagonal as minimum so windows don't overlap origin
+    # Radius: distance from icon center to tile center.
+    # Use tile diagonal as base — scaled down for small groups so windows
+    # don't fly too far from the app icon when there are only 1-2 of them.
     tile_diag = math.hypot(tile_w, tile_h)
-    radius = tile_diag * 0.65
+    if n <= 2:
+        radius = tile_diag * 0.55   # tighter — stays close to icon
+    else:
+        radius = tile_diag * 0.65
 
     positions = []
     if arc_span >= 360:
@@ -401,15 +378,16 @@ class Stack:
         self,
         app_class: str,
         widgets: list[TileWidget],
-        icon_widget: Gtk.Widget,
-        label_widget: Gtk.Label,
+        icon_label_box: Gtk.Box,
+        box_x: float, box_y: float,
         cell_x: float, cell_y: float, cell_w: float, cell_h: float,
         screen_w: float, screen_h: float,
     ) -> None:
         self.app_class = app_class
         self.widgets = widgets
-        self.icon_widget = icon_widget
-        self.label_widget = label_widget
+        self.icon_label_box = icon_label_box
+        self.box_x = box_x
+        self.box_y = box_y
         self.cell_x = cell_x
         self.cell_y = cell_y
         self.cell_w = cell_w
@@ -420,9 +398,6 @@ class Stack:
         # Icon center (explosion origin)
         self.icon_cx = cell_x + cell_w / 2
         self.icon_cy = cell_y + cell_h / 2
-
-        # Collapsed positions (fanned)
-        self.collapsed_pos = [(w._orig_x, w._orig_y) for w in widgets]
 
         # Explosion arc
         arc_start, arc_span = _explosion_arc(
@@ -483,6 +458,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self._root.add_css_class("mc-root")
         self.set_child(self._root)
 
+        # Single Fixed canvas — shadows inserted before tiles so they paint beneath.
         self._fixed = Gtk.Fixed()
         self._fixed.set_hexpand(True)
         self._fixed.set_vexpand(True)
@@ -491,6 +467,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self._tiles: list[TileWidget] = []
         self._stacks: list[Stack] = []
         self._active_stack: Stack | None = None
+        self._hovered_tile: TileWidget | None = None  # tile currently under cursor (exploded)
+        self._css_providers: list[Gtk.CssProvider] = []   # per-tile providers to clean up
 
         key_ctrl = Gtk.EventControllerKey()
         key_ctrl.connect("key-pressed", self._on_key_pressed)
@@ -512,17 +490,10 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self.connect("map", self._on_mapped)
 
     def _build_background(self, monitor: dict, log_w: int, log_h: int) -> None:
-        """
-        Load the current waypaper wallpaper and place it as background.
-        Then fade in a dark overlay on top so tiles are readable.
-        Falls back to solid dark if wallpaper can't be loaded.
-        """
-        import configparser
-        import os
-
+        """Load wallpaper as background. Falls back to transparent if unavailable."""
         wallpaper_path = ""
         try:
-            cfg = configparser.ConfigParser()
+            cfg = ConfigParser()
             cfg.read(os.path.expanduser("~/.config/waypaper/config.ini"))
             wallpaper_path = os.path.expanduser(
                 cfg.get("Settings", "wallpaper", fallback="")
@@ -543,19 +514,54 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             except Exception:
                 pass  # fallback: mc-root stays transparent (black compositor bg)
 
-    def _make_shadow(self, tile_w: int, tile_h: int) -> Gtk.Picture:
+    def _make_shadow(self, tile_w: int, tile_h: int) -> Gtk.DrawingArea:
         """
-        Create a shadow widget from a pre-rendered Gdk.Texture.
-        Computed once at build time — zero cost during animation.
+        Shadow DrawingArea sized tile_w+2*PAD × tile_h+2*PAD.
+        Placed in _fixed at (tile_x - PAD, tile_y - PAD).
+        draw_func reads _shadow_r/g/b attrs at paint time so queue_draw()
+        repaints with updated color without touching the widget tree.
         """
-        tex = _make_shadow_texture(tile_w, tile_h)
         da_w = tile_w + _SHADOW_PAD * 2
         da_h = tile_h + _SHADOW_PAD * 2
-        pic = Gtk.Picture.new_for_paintable(tex)
-        pic.set_can_shrink(False)
-        pic.set_size_request(da_w, da_h)
-        pic.add_css_class("tile-shadow")
-        return pic
+
+        da = Gtk.DrawingArea()
+        da.set_size_request(da_w, da_h)
+        da.set_hexpand(False)
+        da.set_vexpand(False)
+        da.set_halign(Gtk.Align.START)
+        da.set_valign(Gtk.Align.START)
+        da.add_css_class("tile-shadow")
+        da._shadow_r = 0.0
+        da._shadow_g = 0.0
+        da._shadow_b = 0.0
+        da._shadow_a = 0.55   # base alpha — overridden for blue highlight
+
+        _pad    = _SHADOW_PAD
+        _radius = 8.0
+
+        def draw_func(widget, ctx, width, height):
+            r = widget._shadow_r
+            g = widget._shadow_g
+            b = widget._shadow_b
+            base_a = widget._shadow_a
+            for d in range(_pad):
+                t   = 1.0 - d / _pad
+                a   = base_a * (t * t)
+                lw  = 1.5
+                hlw = lw / 2
+                inset = _pad - d
+                px = inset + hlw
+                py = inset + hlw
+                pw = width  - (inset + hlw) * 2
+                ph = height - (inset + hlw) * 2
+                rad = max(_radius - d * 0.5, 0.5)
+                ctx.set_line_width(lw)
+                _rounded_rect(ctx, px, py, pw, ph, rad)
+                ctx.set_source_rgba(r, g, b, a)
+                ctx.stroke()
+
+        da.set_draw_func(draw_func)
+        return da
 
     # ── Setup ─────────────────────────────────────────────────────────────────
 
@@ -594,9 +600,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
         # Serve from cache — tiles show colour-fill if not yet captured.
         # The rolling daemon will fill them in on next open.
-        from src.thumbnails import get_cache
-        cache = get_cache()
-        thumbnails = {c["address"]: cache.get(c["address"]) for c in clients}
+        thumbnails = {c["address"]: get_cache().get(c["address"]) for c in clients}
         tiles = compute_layout(clients, log_w, log_h, padding=52, gap=14)
         self._build_stacks(tiles, log_w, log_h, thumbnails)
 
@@ -605,8 +609,10 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         by_class: dict[str, list] = defaultdict(list)
         tile_widgets: dict[str, list[TileWidget]] = defaultdict(list)
 
-        # Place all tile widgets
-        for i, tile_geo in enumerate(tiles):
+        # Pass 1: create all widgets and shadows (deferred placement).
+        pending: list[tuple[TileWidget, Gtk.DrawingArea, object, str, str, object]] = []
+
+        for tile_geo in tiles:
             addr   = tile_geo.client.get("address", "")
             pixbuf = thumbnails.get(addr)
             cls    = tile_geo.client.get("class") or tile_geo.client.get("initialClass") or "unknown"
@@ -620,50 +626,52 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 display_name=_display_name(cls),
             )
             widget.set_size_request(int(tile_geo.w), int(tile_geo.h))
-            widget._orig_x = tile_geo.x
-            widget._orig_y = tile_geo.y
-            widget._cur_x  = tile_geo.x   # tracks current animated position
-            widget._cur_y  = tile_geo.y
-            widget._tile_w = tile_geo.w
-            widget._tile_h = tile_geo.h
-
-            # Blurred drop shadow: Cairo DrawingArea placed behind tile
-            shadow = self._make_shadow(int(tile_geo.w), int(tile_geo.h))
-            sx = tile_geo.x - _SHADOW_PAD
-            sy = tile_geo.y - _SHADOW_PAD
-            self._fixed.put(shadow, sx, sy)
-            widget._shadow    = shadow
+            widget.set_hexpand(False)
+            widget.set_vexpand(False)
+            widget._orig_x    = tile_geo.x
+            widget._orig_y    = tile_geo.y
+            widget._cur_x     = tile_geo.x
+            widget._cur_y     = tile_geo.y
+            widget._tile_w    = tile_geo.w
+            widget._tile_h    = tile_geo.h
             widget._shadow_dx = -_SHADOW_PAD
             widget._shadow_dy = -_SHADOW_PAD
 
+            shadow = self._make_shadow(int(tile_geo.w), int(tile_geo.h))
+            widget._shadow = shadow
+            pending.append((widget, shadow, tile_geo, addr, cls, pixbuf))
+
+        # Pass 2: place shadow→tile pairs interleaved.
+        # Z-order within each stack: shadow[back]→tile[back]→...→shadow[hero]→tile[hero].
+        # Icon+label boxes are placed last (after all tiles) to guarantee they
+        # paint on top of every tile by GTK insertion order.
+        for widget, shadow, tile_geo, addr, cls, pixbuf in pending:
+            self._fixed.put(shadow, tile_geo.x - _SHADOW_PAD, tile_geo.y - _SHADOW_PAD)
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
+            if getattr(widget, "_css_provider", None) is not None:
+                self._css_providers.append(widget._css_provider)
 
-            # For colour-fill tiles: place icon+label directly in _fixed
-            # at the tile's center — bypasses GTK layout entirely for perfect centering
             if thumbnails.get(addr) is None:
                 center_widget = self._make_tile_center(
                     cls, _display_name(cls),
                     int(tile_geo.w), int(tile_geo.h),
                 )
-                # Measure natural size once — used every animation frame
                 nat = center_widget.get_preferred_size()[1]
-                cw_nat = nat.width
-                ch_nat = nat.height
-                cx = tile_geo.x + tile_geo.w / 2 - cw_nat / 2
-                cy = tile_geo.y + tile_geo.h / 2 - ch_nat / 2
+                cx = tile_geo.x + tile_geo.w / 2 - nat.width  / 2
+                cy = tile_geo.y + tile_geo.h / 2 - nat.height / 2
                 self._fixed.put(center_widget, cx, cy)
                 widget._center_widget  = center_widget
                 widget._center_tile_w  = tile_geo.w
                 widget._center_tile_h  = tile_geo.h
-                widget._center_nat_w   = cw_nat   # cached — avoids per-frame measure
-                widget._center_nat_h   = ch_nat
+                widget._center_nat_w   = nat.width
+                widget._center_nat_h   = nat.height
             else:
                 widget._center_widget = None
 
-            cls = tile_geo.client.get("class") or "unknown"
-            tile_widgets[cls].append(widget)
-            by_class[cls].append(tile_geo)
+            cls2 = tile_geo.client.get("class") or "unknown"
+            tile_widgets[cls2].append(widget)
+            by_class[cls2].append(tile_geo)
 
         # Build one Stack per app class
         for cls, geo_list in by_class.items():
@@ -678,32 +686,36 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             cell_h = cell_b - cell_y
 
             # Icon widget — placed on top of stack center
-            icon_widget = self._make_stack_icon(cls)
-            icon_x = cell_x + cell_w / 2 - _ICON_SIZE / 2
-            icon_y = cell_y + cell_h / 2 - _ICON_SIZE / 2
-            self._fixed.put(icon_widget, icon_x, icon_y)
+            # Icon + label: place as a vertical unit centered on the cell.
+            # Using a Box ensures the label is always centered under the icon
+            # regardless of text length, without guessing widths.
+            icon_label_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+            icon_label_box.set_halign(Gtk.Align.CENTER)
+            icon_label_box.set_valign(Gtk.Align.START)
 
-            # Label centered below icon
+            icon_widget = self._make_stack_icon(cls)
+            icon_widget.set_halign(Gtk.Align.CENTER)
+            icon_label_box.append(icon_widget)
+
             label = Gtk.Label(label=_display_name(cls))
             label.add_css_class("group-label")
             label.set_halign(Gtk.Align.CENTER)
             label.set_max_width_chars(20)
-            label.set_ellipsize(0)   # no ellipsis — names are short
-            label_w = 140
-            self._fixed.put(
-                label,
-                icon_x + _ICON_SIZE / 2 - label_w / 2,
-                icon_y + _ICON_SIZE + 5,
-            )
+            label.set_ellipsize(0)
+            icon_label_box.append(label)
 
-            # TODO 6: window title label removed — tiles already carry their name
-            # in the title bar; the stack icon label shows the app name.
+            # Natural height: icon + spacing + label ≈ ICON_SIZE + 5 + ~20px
+            # Width: cap at 160px so it doesn't drift. GTK will centre within that.
+            icon_label_box.set_size_request(_BOX_W, _BOX_H)
+            box_x = cell_x + cell_w / 2 - _BOX_W / 2
+            box_y = cell_y + cell_h / 2 - _BOX_H / 2
+            # Placement deferred — all icon_label_boxes placed after all tiles below.
 
             stack = Stack(
                 app_class=cls,
                 widgets=widgets,
-                icon_widget=icon_widget,
-                label_widget=label,
+                icon_label_box=icon_label_box,
+                box_x=box_x, box_y=box_y,
                 cell_x=cell_x, cell_y=cell_y,
                 cell_w=cell_w, cell_h=cell_h,
                 screen_w=screen_w, screen_h=screen_h,
@@ -716,30 +728,22 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
                 motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
                 w.add_controller(motion)
+                # Per-tile hover: blue shadow highlight
+                tile_motion = Gtk.EventControllerMotion()
+                tile_motion.connect("enter", lambda *_, tw=w: self._on_tile_enter(tw))
+                tile_motion.connect("leave", lambda *_, tw=w: self._on_tile_leave(tw))
+                w.add_controller(tile_motion)
 
-            # Also hover on icon
-            icon_motion = Gtk.EventControllerMotion()
-            icon_motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
-            icon_motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
-            icon_widget.add_controller(icon_motion)
+            # Hover on icon+label box (single controller covers both)
+            box_motion = Gtk.EventControllerMotion()
+            box_motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
+            box_motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
+            icon_label_box.add_controller(box_motion)
 
-            # Also hover on label (sits below icon, in the gap between icon and tiles)
-            label_motion = Gtk.EventControllerMotion()
-            label_motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
-            label_motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
-            label.add_controller(label_motion)
-
-            # Transparent hit-area covering the full cell to eliminate flicker gaps.
-            hit = Gtk.Box()
-            hit.set_size_request(int(cell_w), int(cell_h))
-            hit.add_css_class("hit-area")
-            self._fixed.put(hit, cell_x, cell_y)
-            hit_motion = Gtk.EventControllerMotion()
-            hit_motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
-            hit_motion.connect("leave", lambda *_, s=stack: self._on_stack_leave(s))
-            hit.add_controller(hit_motion)
-            # Keep reference so it's not GC'd
-            stack._hit_widget = hit
+        # Place all icon_label_boxes LAST — higher z-order than all tiles by insertion.
+        # This is the build-time guarantee that icons are always visible above tiles.
+        for stack in self._stacks:
+            self._fixed.put(stack.icon_label_box, stack.box_x, stack.box_y)
 
     def _make_tile_center(
         self, app_class: str, app_name: str, tile_w: int, tile_h: int
@@ -802,58 +806,61 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 self._active_stack._collapse_id = 0
             self._animate_stack(self._active_stack, explode=False)
         self._active_stack = stack
-        # TODO 7: raise stack tiles to top z-order before animating
-        self._raise_stack(stack)
         self._animate_stack(stack, explode=True)
-
-    def _raise_stack(self, stack: Stack) -> None:
-        """Bring all tiles (shadows, center widgets) to the top of the z-order."""
-        for w in stack.widgets:
-            if hasattr(w, "_shadow"):
-                self._fixed.remove(w._shadow)
-                self._fixed.put(w._shadow, w._cur_x + w._shadow_dx, w._cur_y + w._shadow_dy)
-            cx = w._cur_x
-            cy = w._cur_y
-            self._fixed.remove(w)
-            self._fixed.put(w, cx, cy)
-            if getattr(w, "_center_widget", None) is not None:
-                ccx = cx + w._center_tile_w / 2 - w._center_nat_w / 2
-                ccy = cy + w._center_tile_h / 2 - w._center_nat_h / 2
-                self._fixed.remove(w._center_widget)
-                self._fixed.put(w._center_widget, ccx, ccy)
-        # Also raise icon and label
-        icon = stack.icon_widget
-        icon_x = stack.cell_x + stack.cell_w / 2 - _ICON_SIZE / 2
-        icon_y = stack.cell_y + stack.cell_h / 2 - _ICON_SIZE / 2
-        self._fixed.remove(icon)
-        self._fixed.put(icon, icon_x, icon_y)
-        label = stack.label_widget
-        label_w = 140
-        label_x = icon_x + _ICON_SIZE / 2 - label_w / 2
-        label_y = icon_y + _ICON_SIZE + 5
-        self._fixed.remove(label)
-        self._fixed.put(label, label_x, label_y)
 
     def _on_stack_leave(self, stack: Stack) -> None:
         """Called when mouse leaves any widget belonging to `stack`."""
         stack._hover_count = max(0, stack._hover_count - 1)
         if stack._hover_count > 0:
             return  # mouse moved to another widget in same stack
-        # Debounce: collapse only if mouse hasn't re-entered within 250ms.
-        # This prevents flicker when cursor crosses the gap between the icon
-        # and exploded tiles (both belong to the same stack but GTK fires
-        # leave+enter for each widget crossing).
         if stack._collapse_id:
             GLib.source_remove(stack._collapse_id)
 
         def do_collapse():
             stack._collapse_id = 0
             if stack._hover_count == 0 and self._active_stack is stack:
+                if self._hovered_tile is not None:
+                    self._set_tile_shadow_color(self._hovered_tile, blue=False)
+                    self._hovered_tile = None
                 self._animate_stack(stack, explode=False)
                 self._active_stack = None
             return False
 
         stack._collapse_id = GLib.timeout_add(250, do_collapse)
+
+    # ── Tile-level hover (blue shadow) ────────────────────────────────────────
+
+    def _on_tile_enter(self, widget: TileWidget) -> None:
+        """Mouse entered an individual tile — blue shadow highlight."""
+        if self._hovered_tile is widget:
+            return
+        if self._hovered_tile is not None:
+            self._set_tile_shadow_color(self._hovered_tile, blue=False)
+        self._hovered_tile = widget
+        self._set_tile_shadow_color(widget, blue=True)
+
+    def _on_tile_leave(self, widget: TileWidget) -> None:
+        """Mouse left an individual tile."""
+        if self._hovered_tile is widget:
+            self._set_tile_shadow_color(widget, blue=False)
+            self._hovered_tile = None
+
+    def _set_tile_shadow_color(self, widget: TileWidget, blue: bool) -> None:
+        """Switch shadow between black and blue in-place via queue_draw. No tree mutation."""
+        shadow = getattr(widget, "_shadow", None)
+        if shadow is None:
+            return
+        if blue:
+            shadow._shadow_r = 0.239
+            shadow._shadow_g = 0.682
+            shadow._shadow_b = 0.914
+            shadow._shadow_a = 0.9
+        else:
+            shadow._shadow_r = 0.0
+            shadow._shadow_g = 0.0
+            shadow._shadow_b = 0.0
+            shadow._shadow_a = 0.55
+        shadow.queue_draw()
 
     # ── Animation ─────────────────────────────────────────────────────────────
 
@@ -893,7 +900,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
                 stack._vel[i] = [vx, vy]
                 self._fixed.move(w, nx, ny)
-                if hasattr(w, "_shadow"):
+                if getattr(w, "_shadow", None) is not None:
                     self._fixed.move(w._shadow, nx + w._shadow_dx, ny + w._shadow_dy)
                 if getattr(w, "_center_widget", None) is not None:
                     cx = nx + w._center_tile_w / 2 - w._center_nat_w / 2
@@ -911,7 +918,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             if all_settled:
                 for i, (w, (tx, ty)) in enumerate(zip(stack.widgets, to_pos)):
                     self._fixed.move(w, tx, ty)
-                    if hasattr(w, "_shadow"):
+                    if getattr(w, "_shadow", None) is not None:
                         self._fixed.move(w._shadow, tx + w._shadow_dx, ty + w._shadow_dy)
                     if getattr(w, "_center_widget", None) is not None:
                         cx = tx + w._center_tile_w / 2 - w._center_nat_w / 2
@@ -961,7 +968,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
     # ── Event handlers ────────────────────────────────────────────────────────
 
     def cancel_all_animations(self) -> None:
-        """Cancel all pending GLib timers before the overlay is destroyed."""
+        """Cancel all pending GLib timers and clean up CSS before the overlay is destroyed."""
         for stack in self._stacks:
             if stack._anim_id:
                 GLib.source_remove(stack._anim_id)
@@ -969,6 +976,14 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             if stack._collapse_id:
                 GLib.source_remove(stack._collapse_id)
                 stack._collapse_id = 0
+        # Remove per-tile colour-fill CSS providers from the display.
+        # If not removed, address-based CSS classes persist across overlay sessions
+        # and cause stale background/border colours on subsequent opens.
+        display = Gdk.Display.get_default()
+        if display is not None:
+            for provider in self._css_providers:
+                Gtk.StyleContext.remove_provider_for_display(display, provider)
+        self._css_providers.clear()
 
     def _on_tile_click(self, address: str) -> None:
         """Focus the clicked window and close the overlay (without quitting the daemon)."""
@@ -984,10 +999,12 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             cy = at[1] + sz[1] // 2
             batch = f"dispatch movecursor {cx} {cy} ; "
         batch += f"dispatch focuswindow address:{address}"
-        self.set_visible(False)
+        # Close overlay first so Hyprland receives focus immediately,
+        # then fire hyprctl non-blocking so there's no subprocess wait.
         self.cancel_all_animations()
-        subprocess.run(["hyprctl", "--batch", batch], capture_output=True)
         self.close()
+        subprocess.Popen(["hyprctl", "--batch", batch],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _on_bg_click(self, gesture, n_press, x, y) -> None:
         widget = self.pick(x, y, Gtk.PickFlags.DEFAULT)

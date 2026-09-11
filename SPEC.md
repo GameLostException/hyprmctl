@@ -159,27 +159,64 @@ Stack
 
 ## TODO (before next phase)
 
-1. **Stack label** — app name under icon shows "..." — should be clean app name
-   (e.g. "Thunar", "Kitty"). Centered under icon, not truncated.
+1. ~~**Stack label** — app name under icon shows "..."~~ ✅ Fixed — clean app names via `_display_name()` dict + reverse-DNS fallback.
 
-2. **Explosion flicker** — when cursor is between the icon and exploded windows,
-   the animation oscillates between exploded and collapsed indefinitely. Fix hover
-   debounce / enter-leave detection so mid-path cursor doesn't trigger collapse.
+2. ~~**Explosion flicker**~~ ✅ Fixed — `_hover_count` debounce + 250ms collapse delay.
 
-3. **Window opacity** — tiles must be 100% opaque. No transparency on the tile itself.
+3. ~~**Window opacity**~~ ✅ Fixed — `.tile.card` background forced opaque; `set_hexpand/vexpand(False)` prevents tile size drift.
 
-4. **Tile border** — thin shadowed border matching Hyprland's active window border
-   colour (currently `rgba(3daee9ff)`), like windows look on the regular screen.
+4. ~~**Tile border / shadow**~~ ✅ Fixed — `DrawingArea` draw_func with symmetric Cairo stroke rings. 3px `_SHADOW_PAD`, quadratic falloff, `_shadow_a` attr for per-state alpha.
 
-5. **Hover highlight** — hovering any tile (exploded or single-window stack) smoothly
-   borders it blue (focus colour). Border removed on mouse-out.
+5. **Hover highlight** ✅ Blue shadow on hovered tile via `_set_tile_shadow_color`. `_shadow_a=0.9` for blue, `0.55` for black.
 
-6. **Readable titles in stack** — when fanned/exploded, window title bars must not
-   overlap each other. Fan offset must be large enough that all titles are visible.
+6. **Readable titles in stack** — fan offset 20px X / 30px Y gives visible title bars on back tiles.
 
-7. **Z-order on explosion** — when a stack explodes, all its tiles must be raised
-   above every other stack's tiles. Currently exploded windows may appear behind
-   tiles from adjacent stacks.
+7. **Z-order on explosion** ✅ — `_raise_stack()` called on `_on_stack_enter`: raises all tiles of the active stack above all other stacks. Icon+label box always raised above tiles. On collapse settle, `_restore_stack_zorder()` restores canonical shadow→tile order.
+
+---
+
+### Z-order contract
+
+### Z-order contract
+
+```
+Rules (priority order):
+  1. App icon+label box ALWAYS above all tiles of all stacks.
+  2. Exploded stack tiles ALWAYS above all tiles of all other stacks.
+  3. Hovered tile ALWAYS above its siblings within the exploded stack.
+  4. Collapsed stack tiles return to their initial build-time z-order.
+
+Build-time insertion order (per stack, back→front):
+  [stack A: shadow[0]→tile[0]→...→shadow[n-1]→tile[n-1]]
+  [stack B: shadow[0]→tile[0]→...→shadow[n-1]→tile[n-1]]
+  ...
+  [icon_label_box A] [icon_label_box B] ...   ← always last = always on top
+
+On stack enter (_reorder_stack_to_top):
+  SAFETY: called after GLib.source_remove(stack._anim_id) — no tick running.
+  All shadow→tile pairs of entering stack re-put to top of _fixed.
+  icon_label_box re-put above them.
+
+On tile hover (_reorder_tile_to_top):
+  SAFETY: only when stack._anim_id == 0 (animation fully settled).
+  Hovered shadow→tile re-put to top.
+  icon_label_box re-put above them.
+
+On collapse settle (_restore_stack_zorder):
+  SAFETY: called inside all_settled block — tick returned False, no more frames.
+  Canonical shadow→tile order restored within collapsed stack.
+  icon_label_box re-put above tiles.
+```
+
+### Click contract
+
+```
+_on_tile_click:
+  1. cancel_all_animations()   — stop timers, clean CSS
+  2. close()                   — overlay destroyed, Hyprland regains compositor focus
+  3. Popen hyprctl (non-blocking) — movecursor + focuswindow dispatched immediately
+```
+No set_visible(False) before close — avoids double focus-restore by Hyprland.
 
 ---
 
