@@ -10,6 +10,7 @@ Two render modes:
 
 from __future__ import annotations
 
+import math
 import gi
 
 gi.require_version("Gdk", "4.0")
@@ -90,7 +91,9 @@ class TileWidget(Gtk.Box):
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._client = client
-        self._on_click_cb = on_click
+        # Never expand beyond set_size_request — prevents allocation drift in Gtk.Fixed
+        self.set_hexpand(False)
+        self.set_vexpand(False)
 
         app_class = client.get("class") or client.get("initialClass") or "unknown"
         title     = client.get("title") or "(no title)"
@@ -108,7 +111,7 @@ class TileWidget(Gtk.Box):
             self._build_screenshot(pixbuf, app_class, app_name, title, tile_w, tile_h, title_at_top)
             self._css_provider = None
         else:
-            self._build_colour_fill(app_class, app_name, title, title_at_top)
+            self._build_colour_fill(app_class, app_name)
             self._css_provider = self._inject_border_css(app_class, address)
 
         if on_click is not None:
@@ -132,18 +135,58 @@ class TileWidget(Gtk.Box):
         img_h = max(tile_h - _BAR_H, 1)
 
         scaled = pixbuf.scale_simple(tile_w, img_h, 2)  # BILINEAR
-        tex = Gdk.Texture.new_for_pixbuf(scaled)
-        pic = Gtk.Picture.new_for_paintable(tex)
-        pic.set_can_shrink(False)
-        pic.set_size_request(tile_w, img_h)
+
+        # Draw the screenshot with Cairo so we can clip to rounded bottom corners.
+        # Gtk.Picture cannot be clipped to border-radius without overflow:hidden
+        # (not supported in GTK CSS). DrawingArea + Cairo clip is the only reliable way.
+        RADIUS = 8.0
+        da = Gtk.DrawingArea()
+        da.set_size_request(tile_w, img_h)
+        da.set_hexpand(False)
+        da.set_vexpand(False)
+
+        _pb    = scaled
+        _top   = title_at_top   # True → round bottom corners; False → round top corners
+        _r     = RADIUS
+
+        def draw_screenshot(widget, ctx, width, height):
+            # Clip to rounded rect matching the tile corners
+            if _top:
+                # title bar at top → picture at bottom → round bottom corners only
+                ctx.new_path()
+                ctx.move_to(0, 0)
+                ctx.line_to(width, 0)
+                ctx.line_to(width, height - _r)
+                ctx.arc(width - _r, height - _r, _r, 0, math.pi / 2)
+                ctx.line_to(_r, height)
+                ctx.arc(_r, height - _r, _r, math.pi / 2, math.pi)
+                ctx.line_to(0, 0)
+            else:
+                # title bar at bottom → picture at top → round top corners only
+                ctx.new_path()
+                ctx.move_to(_r, 0)
+                ctx.arc(_r, _r, _r, math.pi, 3 * math.pi / 2)
+                ctx.line_to(width - _r, 0)
+                ctx.arc(width - _r, _r, _r, 3 * math.pi / 2, 0)
+                ctx.line_to(width, height)
+                ctx.line_to(0, height)
+                ctx.close_path()
+            ctx.clip()
+            # Paint the pixbuf
+            Gdk.cairo_set_source_pixbuf(ctx, _pb, 0, 0)
+            ctx.paint()
+
+        da.set_draw_func(draw_screenshot)
 
         # Title bar: icon + FULL window title (no ellipsis, no class label)
-        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         bar.add_css_class("tile-bar")
         bar.add_css_class("tile-bar-top" if title_at_top else "tile-bar-bottom")
         bar.set_size_request(tile_w, _BAR_H)
-        bar.set_margin_start(4)
-        bar.set_margin_end(4)
+        # No margin_start/end — margins add to natural width and cause the tile
+        # Box to report a wider natural size than tile_w, shifting the shadow.
+        bar.set_margin_start(0)
+        bar.set_margin_end(0)
         bar.append(self._make_icon(app_class, size=18))
 
         lbl = Gtk.Label(label=title)
@@ -155,23 +198,20 @@ class TileWidget(Gtk.Box):
 
         if title_at_top:
             self.append(bar)
-            self.append(pic)
+            self.append(da)
         else:
-            self.append(pic)
+            self.append(da)
             self.append(bar)
 
     # ── Colour-fill mode ──────────────────────────────────────────────────────
 
-    def _build_colour_fill(
-        self, app_class: str, app_name: str, title: str, title_at_top: bool
-    ) -> None:
-        # Use an Overlay so the center_col is guaranteed to be centered
-        # regardless of how Gtk.Fixed allocates the parent box.
+    def _build_colour_fill(self, app_class: str, app_name: str) -> None:
+        # Overlay ensures the icon+label column is always centered regardless
+        # of how Gtk.Fixed allocates this box.
         overlay = Gtk.Overlay()
         overlay.set_hexpand(True)
         overlay.set_vexpand(True)
 
-        # Centered column: icon above pill label
         center_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         center_col.set_halign(Gtk.Align.CENTER)
         center_col.set_valign(Gtk.Align.CENTER)
@@ -180,7 +220,7 @@ class TileWidget(Gtk.Box):
         icon.set_halign(Gtk.Align.CENTER)
         center_col.append(icon)
 
-        # Fix 3: app name in a semi-transparent grey pill — readable on any bg
+        # App name in a semi-transparent pill — readable on any background colour
         pill_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         pill_box.set_halign(Gtk.Align.CENTER)
         pill_box.add_css_class("name-pill")
@@ -226,12 +266,12 @@ class TileWidget(Gtk.Box):
             background-color: {bg};
             border-radius: 8px;
         }}
-        .{cls}:hover,
         .{cls}.tile-focused {{
             background-color: {hover_bg};
-            border-width: 2px;
-            border-style: solid;
-            border-color: rgba(61, 174, 233, 1.0);
+            outline-width: 2px;
+            outline-style: solid;
+            outline-color: rgba(61, 174, 233, 1.0);
+            outline-offset: -1px;
         }}
         """
         provider = Gtk.CssProvider()

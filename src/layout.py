@@ -237,8 +237,10 @@ def compute_layout(
 
     # Max tile size: hard cap as fraction of monitor regardless of stack count.
     # Prevents single-stack tiles from filling the entire screen.
-    max_tile_w = monitor_w * MAX_TILE_W_RATIO
-    max_tile_h = monitor_h * MAX_TILE_H_RATIO
+    # With only 1 stack, further reduce by 30% so the tile doesn't dominate.
+    size_scale = 0.70 if n == 1 else 1.0
+    max_tile_w = monitor_w * MAX_TILE_W_RATIO * size_scale
+    max_tile_h = monitor_h * MAX_TILE_H_RATIO * size_scale
 
     # Squarify into n equal cells, then shrink each by gap/2
     raw_cells = _squarify(n, avail_w, avail_h)
