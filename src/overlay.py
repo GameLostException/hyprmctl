@@ -543,19 +543,22 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             except Exception:
                 pass  # fallback: mc-root stays transparent (black compositor bg)
 
-    def _make_shadow(self, tile_w: int, tile_h: int) -> Gtk.Picture:
+    def _make_shadow(self, tile_w: int, tile_h: int) -> Gtk.Image:
         """
         Create a shadow widget from a pre-rendered Gdk.Texture.
-        Computed once at build time — zero cost during animation.
+        Uses Gtk.Image (not Gtk.Picture) — size request is respected exactly,
+        no internal alignment or centering that could cause positional drift.
         """
         tex = _make_shadow_texture(tile_w, tile_h)
         da_w = tile_w + _SHADOW_PAD * 2
         da_h = tile_h + _SHADOW_PAD * 2
-        pic = Gtk.Picture.new_for_paintable(tex)
-        pic.set_can_shrink(False)
-        pic.set_size_request(da_w, da_h)
-        pic.add_css_class("tile-shadow")
-        return pic
+        img = Gtk.Image.new_from_paintable(tex)
+        img.set_pixel_size(-1)   # don't constrain to square
+        img.set_size_request(da_w, da_h)
+        img.set_halign(Gtk.Align.START)
+        img.set_valign(Gtk.Align.START)
+        img.add_css_class("tile-shadow")
+        return img
 
     # ── Setup ─────────────────────────────────────────────────────────────────
 
