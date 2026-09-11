@@ -949,6 +949,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
     def _on_key_pressed(self, ctrl, keyval, keycode, state) -> bool:
         if keyval == Gdk.KEY_Escape:
+            self._cancel_all_animations()
             self.close()
             return True
         if not self._tiles:
@@ -968,13 +969,22 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
     # ── Event handlers ────────────────────────────────────────────────────────
 
+    def _cancel_all_animations(self) -> None:
+        """Cancel all pending GLib timers before the overlay is destroyed."""
+        for stack in self._stacks:
+            if stack._anim_id:
+                GLib.source_remove(stack._anim_id)
+                stack._anim_id = 0
+            if stack._collapse_id:
+                GLib.source_remove(stack._collapse_id)
+                stack._collapse_id = 0
+
     def _on_tile_click(self, address: str) -> None:
         """Focus the clicked window and close the overlay (without quitting the daemon)."""
         client = next(
             (t._client for t in self._tiles if t._client.get("address") == address),
             None,
         )
-        # Warp cursor to target window center so follow_mouse refocuses correctly
         batch = ""
         if client:
             at = client.get("at", [0, 0])
@@ -984,10 +994,12 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             batch = f"dispatch movecursor {cx} {cy} ; "
         batch += f"dispatch focuswindow address:{address}"
         self.set_visible(False)
+        self._cancel_all_animations()
         subprocess.run(["hyprctl", "--batch", batch], capture_output=True)
-        self.close()  # close overlay only — daemon stays alive via hold()
+        self.close()
 
     def _on_bg_click(self, gesture, n_press, x, y) -> None:
         widget = self.pick(x, y, Gtk.PickFlags.DEFAULT)
         if widget is self._root or widget is self._fixed:
+            self._cancel_all_animations()
             self.close()

@@ -33,12 +33,12 @@ import gi
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GdkPixbuf  # noqa: E402
 
-_TIMEOUT      = 2.0    # grim capture timeout (seconds)
+_TIMEOUT      = 2.0    # hyprshot capture timeout (seconds)
 _CACHE_MAX    = 128    # max cached pixbufs in RAM
 _THUMB_MAX_W  = 800    # downscale max width
 _THUMB_MAX_H  = 500    # downscale max height
-_REFRESH_S    = 10     # seconds between full re-capture cycles
-_ROLL_INTERVAL = 0.5   # sleep between individual window captures
+_ROLL_INTERVAL = 2.0   # seconds between individual window captures (relaxed)
+_LOOP_SLEEP    = 0.05  # main loop sleep to prevent CPU spin
 _HYPRSHOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "hyprshot", "hyprshot")
 
 
@@ -218,12 +218,14 @@ class ThumbnailCache:
                     clients = self._all_clients()
                     idx = 0
                 if clients:
-                    threading.Thread(
-                        target=self._capture_client,
-                        args=(clients[idx],),
-                        daemon=True,
-                    ).start()
+                    # Run inline — hyprshot is fast (~0.1s) and we throttle
+                    # via _ROLL_INTERVAL so no need for a thread per capture.
+                    self._capture_client(clients[idx])
                     idx += 1
+
+            # Prevent CPU spin — the socket recv has a 1s timeout but events
+            # can arrive continuously; this sleep keeps the loop at ~20Hz.
+            time.sleep(_LOOP_SLEEP)
 
         if sock:
             try:
