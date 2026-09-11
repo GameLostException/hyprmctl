@@ -117,7 +117,7 @@ def _display_name(app_class: str) -> str:
 _ANIM_FPS  = 60
 _ANIM_MS   = 1000 // _ANIM_FPS
 _ICON_SIZE = 56    # app icon px at stack center
-_SHADOW_PAD = 6    # extra pixels around tile for shadow bleed
+_SHADOW_PAD = 4    # extra pixels around tile for shadow bleed
 
 # ── Cairo shadow helper ───────────────────────────────────────────────────────
 
@@ -925,6 +925,21 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         # On direction reversal, inherit current velocity (continuous motion).
         # On fresh start (vel was [0,0]), spring launches from rest.
 
+        def _dirty_shadow(widgets_subset: list) -> None:
+            """Invalidate only the screen area covered by this stack's tiles."""
+            if self._shadow_layer is None:
+                return
+            PAD = _SHADOW_PAD
+            xs = [w._cur_x - PAD for w in widgets_subset]
+            ys = [w._cur_y - PAD for w in widgets_subset]
+            x2s = [w._cur_x + w._tile_w + PAD for w in widgets_subset]
+            y2s = [w._cur_y + w._tile_h + PAD for w in widgets_subset]
+            x = int(min(xs)) - 2
+            y = int(min(ys)) - 2
+            w2 = int(max(x2s)) - x + 2
+            h2 = int(max(y2s)) - y + 2
+            self._shadow_layer.queue_draw_area(x, y, w2, h2)
+
         def tick():
             all_settled = True
             for i, (w, (tx, ty)) in enumerate(zip(stack.widgets, to_pos)):
@@ -935,7 +950,6 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
                 stack._vel[i] = [vx, vy]
                 self._fixed.move(w, nx, ny)
-                # Update shadow rect for this tile
                 if hasattr(w, "_shadow_idx"):
                     self._shadow_rects[w._shadow_idx] = (nx, ny, w._tile_w, w._tile_h)
                 if getattr(w, "_center_widget", None) is not None:
@@ -951,9 +965,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                         abs(vy) > _SPRING_THRESHOLD):
                     all_settled = False
 
-            # Redraw shadow layer once per frame tick
-            if self._shadow_layer is not None:
-                self._shadow_layer.queue_draw()
+            # Redraw only the animated stack's bounding area
+            _dirty_shadow(stack.widgets)
 
             if all_settled:
                 for i, (w, (tx, ty)) in enumerate(zip(stack.widgets, to_pos)):
@@ -967,8 +980,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                     w._cur_x = tx
                     w._cur_y = ty
                     stack._vel[i] = [0.0, 0.0]
-                if self._shadow_layer is not None:
-                    self._shadow_layer.queue_draw()
+                _dirty_shadow(stack.widgets)
                 stack._anim_id = 0
                 stack.exploded = explode
                 return False
