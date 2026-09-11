@@ -630,13 +630,17 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             widget._tile_w = tile_geo.w
             widget._tile_h = tile_geo.h
 
-            # Blurred drop shadow: placed PAD pixels up and left of tile so the
-            # symmetric shadow texture bleeds equally on all 4 sides.
-            shadow = self._make_shadow(int(tile_geo.w), int(tile_geo.h))
-            self._fixed.put(shadow, tile_geo.x - _SHADOW_PAD, tile_geo.y - _SHADOW_PAD)
-            widget._shadow    = shadow
-            widget._shadow_dx = -_SHADOW_PAD
-            widget._shadow_dy = -_SHADOW_PAD
+            # Shadow only on the hero (frontmost) tile of each stack.
+            # Back tiles are partially covered by the hero — their shadow
+            # would bleed onto the hero tile and look wrong.
+            if tile_geo.is_hero:
+                shadow = self._make_shadow(int(tile_geo.w), int(tile_geo.h))
+                self._fixed.put(shadow, tile_geo.x - _SHADOW_PAD, tile_geo.y - _SHADOW_PAD)
+                widget._shadow    = shadow
+                widget._shadow_dx = -_SHADOW_PAD
+                widget._shadow_dy = -_SHADOW_PAD
+            else:
+                widget._shadow = None
 
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
@@ -811,7 +815,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
     def _raise_stack(self, stack: Stack) -> None:
         """Bring all tiles (shadows, center widgets) to the top of the z-order."""
         for w in stack.widgets:
-            if hasattr(w, "_shadow"):
+            if getattr(w, "_shadow", None) is not None:
                 self._fixed.remove(w._shadow)
                 self._fixed.put(w._shadow, w._cur_x + w._shadow_dx, w._cur_y + w._shadow_dy)
             cx = w._cur_x
@@ -895,7 +899,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
                 stack._vel[i] = [vx, vy]
                 self._fixed.move(w, nx, ny)
-                if hasattr(w, "_shadow"):
+                if getattr(w, "_shadow", None) is not None:
                     self._fixed.move(w._shadow, nx + w._shadow_dx, ny + w._shadow_dy)
                 if getattr(w, "_center_widget", None) is not None:
                     cx = nx + w._center_tile_w / 2 - w._center_nat_w / 2
@@ -913,7 +917,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             if all_settled:
                 for i, (w, (tx, ty)) in enumerate(zip(stack.widgets, to_pos)):
                     self._fixed.move(w, tx, ty)
-                    if hasattr(w, "_shadow"):
+                    if getattr(w, "_shadow", None) is not None:
                         self._fixed.move(w._shadow, tx + w._shadow_dx, ty + w._shadow_dy)
                     if getattr(w, "_center_widget", None) is not None:
                         cx = tx + w._center_tile_w / 2 - w._center_nat_w / 2

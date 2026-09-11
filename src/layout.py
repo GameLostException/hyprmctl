@@ -57,6 +57,7 @@ class TileGeometry:
     h: float
     client: dict[str, Any]
     title_at_top: bool = True   # True → title bar on top of tile; False → bottom
+    is_hero: bool = True        # True for the frontmost tile in each stack
 
 
 def group_by_class(clients: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -194,6 +195,7 @@ def _place_stack(
             h=th,
             client=client,
             title_at_top=title_at_top,
+            is_hero=(i == n - 1),
         ))
 
     return tiles
