@@ -202,6 +202,9 @@ class ThumbnailCache:
                         sock = None
                     else:
                         buf += data
+                        # Guard against unbounded growth on malformed data
+                        if len(buf) > 65536:
+                            buf = buf[-4096:]
                         while "\n" in buf:
                             line, buf = buf.split("\n", 1)
                             self._handle_event(line.strip())
@@ -239,27 +242,45 @@ class ThumbnailCache:
         event, _, payload = line.partition(">>")
 
         if event in ("activewindowv2", "openwindow"):
-            # Capture immediately — hyprshot works for any window
+            # Capture immediately in a background thread so the main loop
+            # isn't blocked. Thread is daemon so it won't prevent shutdown.
             addr = f"0x{payload.split(',')[0].strip()}" if payload.strip() else ""
             if not addr or addr == "0x":
                 return
-            def capture(a=addr):
-                if event == "openwindow":
-                    time.sleep(0.3)  # let new window render first
-                try:
-                    r = subprocess.run(
-                        ["hyprctl", "clients", "-j"],
-                        capture_output=True, text=True, timeout=2.0,
-                    )
-                    client = next(
-                        (c for c in json.loads(r.stdout) if c.get("address") == a),
-                        None,
-                    )
-                    if client:
-                        self._capture_client(client)
-                except Exception:
-                    pass
-            threading.Thread(target=capture, daemon=True).start()
+
+            # closewindow: evict stale address from cache
+        elif event == "closewindow":
+            addr = f"0x{payload.strip()}" if payload.strip() else ""
+            if addr and addr != "0x":
+                with self._lock:
+                    if addr in self._cache:
+                        del self._cache[addr]
+                        try:
+                            self._order.remove(addr)
+                        except ValueError:
+                            pass
+            return
+        else:
+            return
+
+        def capture(a: str = addr, ev: str = event) -> None:
+            if ev == "openwindow":
+                time.sleep(0.3)  # let new window render first
+            try:
+                r = subprocess.run(
+                    ["hyprctl", "clients", "-j"],
+                    capture_output=True, text=True, timeout=2.0,
+                )
+                client = next(
+                    (c for c in json.loads(r.stdout) if c.get("address") == a),
+                    None,
+                )
+                if client:
+                    self._capture_client(client)
+            except Exception:
+                pass
+
+        threading.Thread(target=capture, daemon=True).start()
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────

@@ -30,8 +30,10 @@ class MissionControlApp(Gtk.Application):
     def __init__(self) -> None:
         super().__init__(application_id="org.boris.hyprmctl")
         self._overlay: MissionControlOverlay | None = None
+        self._shutdown = threading.Event()
         self.connect("startup", self._on_startup)
         self.connect("activate", self._on_activate)
+        self.connect("shutdown", self._on_shutdown)
 
     def _on_startup(self, app: Gtk.Application) -> None:
         # Hold the application alive so it doesn't quit when overlay closes
@@ -46,6 +48,15 @@ class MissionControlApp(Gtk.Application):
         if "--show" in sys.argv:
             self._show_overlay()
 
+    def _on_shutdown(self, app: Gtk.Application) -> None:
+        self._shutdown.set()
+        # Stop thumbnail cache thread cleanly
+        from src.thumbnails import get_cache as _gc
+        try:
+            _gc().stop()
+        except Exception:
+            pass
+
     # ── IPC socket ────────────────────────────────────────────────────────────
 
     def _serve(self) -> None:
@@ -57,17 +68,24 @@ class MissionControlApp(Gtk.Application):
             srv.bind(_SOCK)
             srv.listen(4)
             srv.settimeout(1.0)
-            while True:
+            while not self._shutdown.is_set():
                 try:
                     conn, _ = srv.accept()
                 except TimeoutError:
                     continue
+                except OSError:
+                    break
                 try:
-                    cmd = conn.recv(64).decode().strip()
-                    conn.close()
+                    with conn:
+                        cmd = conn.recv(64).decode().strip()
                     GLib.idle_add(self._handle_cmd, cmd)
                 except Exception:
                     pass
+        # Clean up socket file on exit
+        try:
+            os.unlink(_SOCK)
+        except OSError:
+            pass
 
     def _handle_cmd(self, cmd: str) -> bool:
         if cmd == "show":
@@ -85,6 +103,7 @@ class MissionControlApp(Gtk.Application):
 
     def _show_overlay(self) -> None:
         if self._overlay is not None:
+            self._overlay.cancel_all_animations()
             self._overlay.close()
             self._overlay = None
         self._overlay = MissionControlOverlay(self)
@@ -92,5 +111,6 @@ class MissionControlApp(Gtk.Application):
 
     def _hide_overlay(self) -> None:
         if self._overlay is not None:
+            self._overlay.cancel_all_animations()
             self._overlay.close()
             self._overlay = None

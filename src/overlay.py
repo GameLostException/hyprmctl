@@ -253,6 +253,10 @@ _BASE_CSS = """
     color: rgba(255, 255, 255, 0.4);
     font-size: 18px;
 }
+/* Transparent hit-area for hover zone — no visual rendering */
+.hit-area {
+    background-color: transparent;
+}
 .stack-icon {
     border-radius: 8px;
 }
@@ -642,14 +646,18 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                     cls, _display_name(cls),
                     int(tile_geo.w), int(tile_geo.h),
                 )
-                cw_nat = center_widget.get_preferred_size()[1].width
-                ch_nat = center_widget.get_preferred_size()[1].height
+                # Measure natural size once — used every animation frame
+                nat = center_widget.get_preferred_size()[1]
+                cw_nat = nat.width
+                ch_nat = nat.height
                 cx = tile_geo.x + tile_geo.w / 2 - cw_nat / 2
                 cy = tile_geo.y + tile_geo.h / 2 - ch_nat / 2
                 self._fixed.put(center_widget, cx, cy)
                 widget._center_widget  = center_widget
                 widget._center_tile_w  = tile_geo.w
                 widget._center_tile_h  = tile_geo.h
+                widget._center_nat_w   = cw_nat   # cached — avoids per-frame measure
+                widget._center_nat_h   = ch_nat
             else:
                 widget._center_widget = None
 
@@ -722,17 +730,9 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             label.add_controller(label_motion)
 
             # Transparent hit-area covering the full cell to eliminate flicker gaps.
-            # This ensures the stack doesn't collapse when the cursor briefly passes
-            # through the space between the icon and exploded tiles.
             hit = Gtk.Box()
             hit.set_size_request(int(cell_w), int(cell_h))
-            # Completely transparent — only captures pointer events
-            hit_css = Gtk.CssProvider()
-            hit_css.load_from_data(b"box { background: transparent; }")
-            Gtk.StyleContext.add_provider_for_display(
-                Gdk.Display.get_default(), hit_css,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION - 1,
-            )
+            hit.add_css_class("hit-area")
             self._fixed.put(hit, cell_x, cell_y)
             hit_motion = Gtk.EventControllerMotion()
             hit_motion.connect("enter", lambda *_, s=stack: self._on_stack_enter(s))
@@ -771,10 +771,10 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         icon_name = resolve_icon_name(app_class)
         if icon_name:
             img = Gtk.Image.new_from_icon_name(icon_name)
-            img.set_pixel_size(_ICON_SIZE)
+            img.set_pixel_size(size)
         else:
             img = Gtk.Label(label=(app_class[:2]).upper())
-            img.set_size_request(_ICON_SIZE, _ICON_SIZE)
+            img.set_size_request(size, size)
             img.add_css_class("tile-initials")
         img.add_css_class("stack-icon")
         return img
@@ -817,11 +817,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             self._fixed.remove(w)
             self._fixed.put(w, cx, cy)
             if getattr(w, "_center_widget", None) is not None:
-                cw = w._center_tile_w
-                ch = w._center_tile_h
-                nat = w._center_widget.get_preferred_size()[1]
-                ccx = cx + cw / 2 - nat.width / 2
-                ccy = cy + ch / 2 - nat.height / 2
+                ccx = cx + w._center_tile_w / 2 - w._center_nat_w / 2
+                ccy = cy + w._center_tile_h / 2 - w._center_nat_h / 2
                 self._fixed.remove(w._center_widget)
                 self._fixed.put(w._center_widget, ccx, ccy)
         # Also raise icon and label
@@ -899,11 +896,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 if hasattr(w, "_shadow"):
                     self._fixed.move(w._shadow, nx + w._shadow_dx, ny + w._shadow_dy)
                 if getattr(w, "_center_widget", None) is not None:
-                    cw = w._center_tile_w
-                    ch = w._center_tile_h
-                    nat = w._center_widget.get_preferred_size()[1]
-                    cx = nx + cw / 2 - nat.width / 2
-                    cy = ny + ch / 2 - nat.height / 2
+                    cx = nx + w._center_tile_w / 2 - w._center_nat_w / 2
+                    cy = ny + w._center_tile_h / 2 - w._center_nat_h / 2
                     self._fixed.move(w._center_widget, cx, cy)
                 w._cur_x = nx
                 w._cur_y = ny
@@ -920,11 +914,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                     if hasattr(w, "_shadow"):
                         self._fixed.move(w._shadow, tx + w._shadow_dx, ty + w._shadow_dy)
                     if getattr(w, "_center_widget", None) is not None:
-                        cw = w._center_tile_w
-                        ch = w._center_tile_h
-                        nat = w._center_widget.get_preferred_size()[1]
-                        cx = tx + cw / 2 - nat.width / 2
-                        cy = ty + ch / 2 - nat.height / 2
+                        cx = tx + w._center_tile_w / 2 - w._center_nat_w / 2
+                        cy = ty + w._center_tile_h / 2 - w._center_nat_h / 2
                         self._fixed.move(w._center_widget, cx, cy)
                     w._cur_x = tx
                     w._cur_y = ty
@@ -949,7 +940,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
     def _on_key_pressed(self, ctrl, keyval, keycode, state) -> bool:
         if keyval == Gdk.KEY_Escape:
-            self._cancel_all_animations()
+            self.cancel_all_animations()
             self.close()
             return True
         if not self._tiles:
@@ -969,7 +960,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
     # ── Event handlers ────────────────────────────────────────────────────────
 
-    def _cancel_all_animations(self) -> None:
+    def cancel_all_animations(self) -> None:
         """Cancel all pending GLib timers before the overlay is destroyed."""
         for stack in self._stacks:
             if stack._anim_id:
@@ -994,12 +985,12 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             batch = f"dispatch movecursor {cx} {cy} ; "
         batch += f"dispatch focuswindow address:{address}"
         self.set_visible(False)
-        self._cancel_all_animations()
+        self.cancel_all_animations()
         subprocess.run(["hyprctl", "--batch", batch], capture_output=True)
         self.close()
 
     def _on_bg_click(self, gesture, n_press, x, y) -> None:
         widget = self.pick(x, y, Gtk.PickFlags.DEFAULT)
         if widget is self._root or widget is self._fixed:
-            self._cancel_all_animations()
+            self.cancel_all_animations()
             self.close()
