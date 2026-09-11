@@ -144,8 +144,6 @@ def _make_shadow_texture(
 
     PAD    = _SHADOW_PAD
     RADIUS = 8.0
-    STEPS  = 12
-    ALPHA  = 0.18   # subtle per-step alpha
 
     da_w = tile_w + PAD * 2
     da_h = tile_h + PAD * 2
@@ -153,31 +151,42 @@ def _make_shadow_texture(
     surf = _cairo.ImageSurface(_cairo.FORMAT_ARGB32, da_w, da_h)
     ctx  = _cairo.Context(surf)
 
-    # Paint from outermost ring inward — each step strictly symmetric
-    for step in range(STEPS):
-        inset = PAD * step / STEPS           # how far in from edge
-        # Smooth falloff: strongest near tile edge, fades to 0 at PAD distance
-        t = 1.0 - step / STEPS              # 1.0 at edge, 0.0 at PAD
-        a = ALPHA * t * t                    # quadratic falloff
-        rx = inset
-        ry = inset
+    # Stroke concentric rings from tile edge outward.
+    # Each ring is at distance d outside the tile, with alpha = 0.22*(1-d/PAD)^2.
+    # Using stroke (not fill) means each ring contributes independently — no
+    # double-accumulation — so all 4 sides are mathematically identical.
+    for d in range(PAD):
+        t = 1.0 - d / PAD       # 1.0 at tile edge, 0.0 at PAD
+        a = 0.22 * t * t
+        inset = PAD - d         # ring position in surface coords
         rw = da_w - inset * 2
         rh = da_h - inset * 2
-        r  = RADIUS + (PAD - inset) * 0.3
-        _rounded_rect(ctx, rx, ry, rw, rh, max(r, 0.5))
+        r  = max(RADIUS + d * 0.15, 0.5)
+        ctx.set_line_width(1.5)
+        _rounded_rect(ctx, inset + 0.75, inset + 0.75, rw - 1.5, rh - 1.5, r)
         ctx.set_source_rgba(0, 0, 0, a)
-        ctx.fill()
+        ctx.stroke()
 
     surf.flush()
-    src  = surf.get_data()
-    n    = da_w * da_h
-    rgba = bytearray(n * 4)
-    for i in range(n):
-        b, g, r, a_v = src[i*4], src[i*4+1], src[i*4+2], src[i*4+3]
-        rgba[i*4], rgba[i*4+1], rgba[i*4+2], rgba[i*4+3] = r, g, b, a_v
+    src = surf.get_data()
+    n   = da_w * da_h
+
+    # Fast BGRA→RGBA channel swap using numpy if available, else memoryview
+    try:
+        import numpy as np
+        arr = np.frombuffer(src, dtype=np.uint8).reshape(n, 4)
+        rgba_arr = arr[:, [2, 1, 0, 3]]  # BGRA → RGBA
+        rgba = rgba_arr.tobytes()
+    except ImportError:
+        # Fallback: memoryview swap — still pure Python but avoids per-item overhead
+        mv  = memoryview(src).cast("B")
+        raw = bytearray(mv)
+        for i in range(0, n * 4, 4):
+            raw[i], raw[i+2] = raw[i+2], raw[i]   # swap B↔R, keep G and A
+        rgba = bytes(raw)
 
     pb = GdkPixbuf.Pixbuf.new_from_bytes(
-        GLib.Bytes.new(bytes(rgba)),
+        GLib.Bytes.new(rgba),
         GdkPixbuf.Colorspace.RGB, True, 8, da_w, da_h, da_w * 4,
     )
     return Gdk.Texture.new_for_pixbuf(pb)
@@ -190,7 +199,7 @@ _SPRING_EXPLODE_DAMPING   = 22.0    # lower = more overshoot (critical ≈ 2√k
 _SPRING_COLLAPSE_STIFFNESS = 400.0
 _SPRING_COLLAPSE_DAMPING   = 36.0
 # Stop threshold: distance in px below which we snap to target
-_SPRING_THRESHOLD = 0.4
+_SPRING_THRESHOLD = 1.5
 
 _BASE_CSS = """
 .mc-root {
