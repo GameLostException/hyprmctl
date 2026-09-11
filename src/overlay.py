@@ -608,13 +608,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         by_class: dict[str, list] = defaultdict(list)
         tile_widgets: dict[str, list[TileWidget]] = defaultdict(list)
 
-        # Two-pass: first place ALL shadows, then ALL tiles.
-        # This ensures every shadow is below every tile in z-order,
-        # so back-tile shadows are never covered by the hero tile.
-
-        # Pass 1: build widgets and place shadows
-        widget_list: list[tuple] = []   # (tile_geo, widget, center_widget_or_None)
-        for tile_geo in tiles:
+        # Place all tile widgets
+        for i, tile_geo in enumerate(tiles):
             addr   = tile_geo.client.get("address", "")
             pixbuf = thumbnails.get(addr)
             cls    = tile_geo.client.get("class") or tile_geo.client.get("initialClass") or "unknown"
@@ -630,35 +625,30 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             widget.set_size_request(int(tile_geo.w), int(tile_geo.h))
             widget._orig_x = tile_geo.x
             widget._orig_y = tile_geo.y
-            widget._cur_x  = tile_geo.x
+            widget._cur_x  = tile_geo.x   # tracks current animated position
             widget._cur_y  = tile_geo.y
             widget._tile_w = tile_geo.w
             widget._tile_h = tile_geo.h
 
+            # Blurred drop shadow: placed PAD pixels up and left of tile so the
+            # symmetric shadow texture bleeds equally on all 4 sides.
             shadow = self._make_shadow(int(tile_geo.w), int(tile_geo.h))
             self._fixed.put(shadow, tile_geo.x - _SHADOW_PAD, tile_geo.y - _SHADOW_PAD)
             widget._shadow    = shadow
             widget._shadow_dx = -_SHADOW_PAD
             widget._shadow_dy = -_SHADOW_PAD
 
-            widget_list.append((tile_geo, widget))
-
-        # Pass 2: place all tiles above all shadows
-        for tile_geo, widget in widget_list:
-            addr = tile_geo.client.get("address", "")
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
 
-            cls = tile_geo.client.get("class") or "unknown"
-            tile_widgets[cls].append(widget)
-            by_class[cls].append(tile_geo)
-
-            # Centre widget for colour-fill tiles
+            # For colour-fill tiles: place icon+label directly in _fixed
+            # at the tile's center — bypasses GTK layout entirely for perfect centering
             if thumbnails.get(addr) is None:
                 center_widget = self._make_tile_center(
                     cls, _display_name(cls),
                     int(tile_geo.w), int(tile_geo.h),
                 )
+                # Measure natural size once — used every animation frame
                 nat = center_widget.get_preferred_size()[1]
                 cw_nat = nat.width
                 ch_nat = nat.height
@@ -668,10 +658,14 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 widget._center_widget  = center_widget
                 widget._center_tile_w  = tile_geo.w
                 widget._center_tile_h  = tile_geo.h
-                widget._center_nat_w   = cw_nat
+                widget._center_nat_w   = cw_nat   # cached — avoids per-frame measure
                 widget._center_nat_h   = ch_nat
             else:
                 widget._center_widget = None
+
+            cls = tile_geo.client.get("class") or "unknown"
+            tile_widgets[cls].append(widget)
+            by_class[cls].append(tile_geo)
 
         # Build one Stack per app class
         for cls, geo_list in by_class.items():
