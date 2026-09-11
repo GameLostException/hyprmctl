@@ -492,6 +492,9 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self._stacks: list[Stack] = []
         self._active_stack: Stack | None = None
         self._css_providers: list[Gtk.CssProvider] = []   # per-tile providers to clean up
+        # Shadow layer: list of (x, y, w, h) updated each animation frame
+        self._shadow_rects: list[tuple[float, float, float, float]] = []
+        self._shadow_layer: Gtk.DrawingArea | None = None
 
         key_ctrl = Gtk.EventControllerKey()
         key_ctrl.connect("key-pressed", self._on_key_pressed)
@@ -561,6 +564,42 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         pic.add_css_class("tile-shadow")
         return pic
 
+    def _build_shadow_layer(self, screen_w: int, screen_h: int) -> None:
+        """
+        Create a single full-screen Gtk.DrawingArea that draws all tile shadows
+        in one Cairo pass. Placed between wallpaper and tiles in z-order.
+        No per-tile widget alignment issues — shadows are drawn at exact pixel coords.
+        """
+        import cairo as _cairo
+
+        RADIUS = 8.0
+        PAD    = _SHADOW_PAD
+
+        da = Gtk.DrawingArea()
+        da.set_size_request(screen_w, screen_h)
+
+        def draw(area, cr, w, h):
+            cr.save()
+            cr.set_operator(_cairo.OPERATOR_OVER)
+            for rx, ry, rw, rh in self._shadow_rects:
+                for d in range(PAD):
+                    t = 1.0 - d / PAD
+                    a = 0.22 * t * t
+                    ix = rx - (PAD - d)
+                    iy = ry - (PAD - d)
+                    iw = rw + (PAD - d) * 2
+                    ih = rh + (PAD - d) * 2
+                    r  = max(RADIUS + d * 0.15, 0.5)
+                    cr.set_line_width(1.5)
+                    _rounded_rect(cr, ix + 0.75, iy + 0.75, iw - 1.5, ih - 1.5, r)
+                    cr.set_source_rgba(0, 0, 0, a)
+                    cr.stroke()
+            cr.restore()
+
+        da.set_draw_func(draw)
+        self._shadow_layer = da
+        self._fixed.put(da, 0, 0)
+
     # ── Setup ─────────────────────────────────────────────────────────────────
 
     def _on_mapped(self, _widget) -> None:
@@ -609,8 +648,13 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         by_class: dict[str, list] = defaultdict(list)
         tile_widgets: dict[str, list[TileWidget]] = defaultdict(list)
 
+        # Build the single shadow layer (placed after wallpaper, before all tiles)
+        self._build_shadow_layer(screen_w, screen_h)
+        # Initialise shadow rects from tile positions
+        self._shadow_rects = [(g.x, g.y, g.w, g.h) for g in tiles]
+
         # Place all tile widgets
-        for i, tile_geo in enumerate(tiles):
+        for idx, tile_geo in enumerate(tiles):
             addr   = tile_geo.client.get("address", "")
             pixbuf = thumbnails.get(addr)
             cls    = tile_geo.client.get("class") or tile_geo.client.get("initialClass") or "unknown"
@@ -626,22 +670,13 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             widget.set_size_request(int(tile_geo.w), int(tile_geo.h))
             widget._orig_x = tile_geo.x
             widget._orig_y = tile_geo.y
-            widget._cur_x  = tile_geo.x   # tracks current animated position
+            widget._cur_x  = tile_geo.x
             widget._cur_y  = tile_geo.y
             widget._tile_w = tile_geo.w
             widget._tile_h = tile_geo.h
-
-            # Shadow only on the hero (frontmost) tile of each stack.
-            # Back tiles are partially covered by the hero — their shadow
-            # would bleed onto the hero tile and look wrong.
-            if tile_geo.is_hero:
-                shadow = self._make_shadow(int(tile_geo.w), int(tile_geo.h))
-                self._fixed.put(shadow, tile_geo.x - _SHADOW_PAD, tile_geo.y - _SHADOW_PAD)
-                widget._shadow    = shadow
-                widget._shadow_dx = -_SHADOW_PAD
-                widget._shadow_dy = -_SHADOW_PAD
-            else:
-                widget._shadow = None
+            # Index into _shadow_rects so animation tick can update this tile's shadow
+            widget._shadow_idx = idx
+            widget._shadow = None   # no per-widget shadow object
 
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)
@@ -817,11 +852,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         self._animate_stack(stack, explode=True)
 
     def _raise_stack(self, stack: Stack) -> None:
-        """Bring all tiles (shadows, center widgets) to the top of the z-order."""
+        """Bring all tiles (and center widgets) to the top of the z-order."""
         for w in stack.widgets:
-            if getattr(w, "_shadow", None) is not None:
-                self._fixed.remove(w._shadow)
-                self._fixed.put(w._shadow, w._cur_x + w._shadow_dx, w._cur_y + w._shadow_dy)
             cx = w._cur_x
             cy = w._cur_y
             self._fixed.remove(w)
@@ -903,8 +935,9 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
 
                 stack._vel[i] = [vx, vy]
                 self._fixed.move(w, nx, ny)
-                if getattr(w, "_shadow", None) is not None:
-                    self._fixed.move(w._shadow, nx + w._shadow_dx, ny + w._shadow_dy)
+                # Update shadow rect for this tile
+                if hasattr(w, "_shadow_idx"):
+                    self._shadow_rects[w._shadow_idx] = (nx, ny, w._tile_w, w._tile_h)
                 if getattr(w, "_center_widget", None) is not None:
                     cx = nx + w._center_tile_w / 2 - w._center_nat_w / 2
                     cy = ny + w._center_tile_h / 2 - w._center_nat_h / 2
@@ -918,11 +951,15 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                         abs(vy) > _SPRING_THRESHOLD):
                     all_settled = False
 
+            # Redraw shadow layer once per frame tick
+            if self._shadow_layer is not None:
+                self._shadow_layer.queue_draw()
+
             if all_settled:
                 for i, (w, (tx, ty)) in enumerate(zip(stack.widgets, to_pos)):
                     self._fixed.move(w, tx, ty)
-                    if getattr(w, "_shadow", None) is not None:
-                        self._fixed.move(w._shadow, tx + w._shadow_dx, ty + w._shadow_dy)
+                    if hasattr(w, "_shadow_idx"):
+                        self._shadow_rects[w._shadow_idx] = (tx, ty, w._tile_w, w._tile_h)
                     if getattr(w, "_center_widget", None) is not None:
                         cx = tx + w._center_tile_w / 2 - w._center_nat_w / 2
                         cy = ty + w._center_tile_h / 2 - w._center_nat_h / 2
@@ -930,6 +967,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                     w._cur_x = tx
                     w._cur_y = ty
                     stack._vel[i] = [0.0, 0.0]
+                if self._shadow_layer is not None:
+                    self._shadow_layer.queue_draw()
                 stack._anim_id = 0
                 stack.exploded = explode
                 return False
