@@ -192,14 +192,14 @@ def _make_shadow_texture(
     return Gdk.Texture.new_for_pixbuf(pb)
 
 # Spring physics constants
-# Explode: stiff spring, slight overshoot — snappy pop-out
-_SPRING_EXPLODE_STIFFNESS = 320.0   # higher = faster
-_SPRING_EXPLODE_DAMPING   = 22.0    # lower = more overshoot (critical ≈ 2√k)
-# Collapse: overdamped — quick clean snap-back, no bounce
-_SPRING_COLLAPSE_STIFFNESS = 400.0
-_SPRING_COLLAPSE_DAMPING   = 36.0
-# Stop threshold: distance in px below which we snap to target
-_SPRING_THRESHOLD = 1.5
+# Explode: snappy pop-out with very slight overshoot
+_SPRING_EXPLODE_STIFFNESS  = 500.0   # was 320 — much snappier launch
+_SPRING_EXPLODE_DAMPING    = 28.0    # slightly underdamped (critical ≈ 2√500 ≈ 44.7)
+# Collapse: overdamped snap-back, no bounce
+_SPRING_COLLAPSE_STIFFNESS = 600.0   # was 400
+_SPRING_COLLAPSE_DAMPING   = 52.0    # overdamped (critical ≈ 49) — clean return
+# Stop threshold: snap to target when within this many px AND velocity < threshold
+_SPRING_THRESHOLD = 0.8              # was 1.5 — more precise snap
 
 _BASE_CSS = """
 .mc-root {
@@ -627,14 +627,17 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             widget._tile_w = tile_geo.w
             widget._tile_h = tile_geo.h
 
-            # Blurred drop shadow: Cairo DrawingArea placed behind tile
+            # Blurred drop shadow: placed at exact tile position.
+            # The shadow texture is (tile_w + 2*PAD) × (tile_h + 2*PAD) but
+            # positioned with a negative margin so it bleeds equally on all sides.
+            # Using margin_start/top = -PAD centres the larger surface behind the tile.
             shadow = self._make_shadow(int(tile_geo.w), int(tile_geo.h))
-            sx = tile_geo.x - _SHADOW_PAD
-            sy = tile_geo.y - _SHADOW_PAD
-            self._fixed.put(shadow, sx, sy)
+            shadow.set_margin_start(-_SHADOW_PAD)
+            shadow.set_margin_top(-_SHADOW_PAD)
+            self._fixed.put(shadow, tile_geo.x, tile_geo.y)
             widget._shadow    = shadow
-            widget._shadow_dx = -_SHADOW_PAD
-            widget._shadow_dy = -_SHADOW_PAD
+            widget._shadow_dx = 0   # same position as tile
+            widget._shadow_dy = 0
 
             self._fixed.put(widget, tile_geo.x, tile_geo.y)
             self._tiles.append(widget)

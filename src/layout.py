@@ -32,6 +32,11 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+# Maximum tile size as fraction of monitor dimensions
+# Prevents tiles being absurdly large when there are few stacks
+MAX_TILE_W_RATIO = 0.38   # max 38% of monitor width
+MAX_TILE_H_RATIO = 0.32   # max 32% of monitor height
+
 # Fan offset per window step (px in overlay space).
 # FAN_STEP_Y must be >= the title bar height (28px) so the bar of the tile
 # beneath is never covered by the tile stacked on top of it.
@@ -125,21 +130,13 @@ def _place_stack(
     cell_w: float,
     cell_h: float,
     padding: float,
+    max_tile_w: float = 9999.0,
+    max_tile_h: float = 9999.0,
 ) -> list[TileGeometry]:
     """
     Place all windows in a group as a fanned stack within a cell.
-    The hero (largest) window fills ~HERO_FILL of the cell.
-    Other windows are placed behind it with FAN_STEP offset.
-
-    Title bar placement:
-      The fan direction is always (+FAN_STEP_X, +FAN_STEP_Y) — back tiles are
-      offset toward the top-left (negative direction) relative to the hero.
-      The *exposed* strip of each non-hero tile is the edge that sticks out
-      from under the tile in front of it:
-
-        fan_dy > 0  (fan goes down, 4h30):  top edge exposed  → title at TOP
-        fan_dy < 0  (fan goes up,  1h30):   bottom edge exposed → title at BOTTOM
-        fan_dy == 0 (pure horizontal fan):  pick top by convention
+    max_tile_w / max_tile_h cap the hero tile size regardless of cell size.
+    title_at_top is derived from FAN_STEP_Y sign (positive = fan SE = title at top).
     """
     inner_w = cell_w - 2 * padding
     inner_h = cell_h - 2 * padding
@@ -158,9 +155,11 @@ def _place_stack(
     hero_avail_w = max(hero_avail_w, MIN_TILE_W)
     hero_avail_h = max(hero_avail_h, MIN_TILE_H)
 
-    # Scale hero preserving aspect ratio
+    # Scale hero preserving aspect ratio, capped by max tile dimensions
     hw, hh = _window_size(ordered[-1])
     scale = min(hero_avail_w / hw, hero_avail_h / hh)
+    # Apply absolute max size cap (prevents oversized tiles with few stacks)
+    scale = min(scale, max_tile_w / hw, max_tile_h / hh)
     hero_w = max(hw * scale, MIN_TILE_W)
     hero_h = max(hh * scale, MIN_TILE_H)
 
@@ -234,6 +233,12 @@ def compute_layout(
     avail_w = float(monitor_w - 2 * padding)
     avail_h = float(monitor_h - 2 * padding)
 
+    # Max tile size: absolute cap as fraction of monitor, plus 30% reduction
+    # when there are very few stacks (tiles would otherwise fill the screen).
+    size_factor = 0.70 if n <= 2 else 1.0
+    max_tile_w = monitor_w * MAX_TILE_W_RATIO * size_factor
+    max_tile_h = monitor_h * MAX_TILE_H_RATIO * size_factor
+
     # Squarify into n equal cells, then shrink each by gap/2
     raw_cells = _squarify(n, avail_w, avail_h)
     half_gap = gap / 2
@@ -245,6 +250,9 @@ def compute_layout(
         cell_y = padding + cy + half_gap
         cell_w = cw - gap
         cell_h = ch - gap
-        tiles.extend(_place_stack(group, cell_x, cell_y, cell_w, cell_h, padding=8))
+        tiles.extend(_place_stack(
+            group, cell_x, cell_y, cell_w, cell_h, padding=8,
+            max_tile_w=max_tile_w, max_tile_h=max_tile_h,
+        ))
 
     return tiles
