@@ -171,25 +171,25 @@ def _make_shadow_texture(
     src = surf.get_data()
     n   = da_w * da_h
 
-    # Fast BGRA→RGBA channel swap using numpy if available, else memoryview
+    # BGRA→RGBA channel swap (Cairo is BGRA little-endian, GDK wants RGBA)
     try:
         import numpy as np
         arr = np.frombuffer(src, dtype=np.uint8).reshape(n, 4)
-        rgba_arr = arr[:, [2, 1, 0, 3]]  # BGRA → RGBA
-        rgba = rgba_arr.tobytes()
+        rgba = arr[:, [2, 1, 0, 3]].tobytes()
     except ImportError:
-        # Fallback: memoryview swap — still pure Python but avoids per-item overhead
         mv  = memoryview(src).cast("B")
         raw = bytearray(mv)
         for i in range(0, n * 4, 4):
-            raw[i], raw[i+2] = raw[i+2], raw[i]   # swap B↔R, keep G and A
+            raw[i], raw[i+2] = raw[i+2], raw[i]
         rgba = bytes(raw)
 
-    pb = GdkPixbuf.Pixbuf.new_from_bytes(
+    # Use Gdk.MemoryTexture — new_for_pixbuf is deprecated and broken in GTK 4.22+
+    return Gdk.MemoryTexture.new(
+        da_w, da_h,
+        Gdk.MemoryFormat.R8G8B8A8,
         GLib.Bytes.new(rgba),
-        GdkPixbuf.Colorspace.RGB, True, 8, da_w, da_h, da_w * 4,
+        da_w * 4,
     )
-    return Gdk.Texture.new_for_pixbuf(pb)
 
 # Spring physics constants
 # Explode: snappy pop-out with very slight overshoot
@@ -271,7 +271,7 @@ _BASE_CSS = """
     font-size: 11px;
     font-weight: 500;
 }
-/* Manual drop shadow behind each tile (drawn via Cairo DrawingArea) */
+/* Manual drop shadow behind each tile */
 .tile-shadow {
     background-color: transparent;
 }
