@@ -32,7 +32,7 @@ hyprmctl runs as a **persistent background daemon**. The daemon stays alive betw
 
 ```
 exec-once = python3 hyprmctl.py        # start daemon at login
-bind = $mod, SPACE, exec, python3 hyprmctl.py --show   # open overlay
+bind = $mod, SPACE, exec, python3 REPO_PATH/hyprmctl.py --show   # open overlay
 ```
 
 When `--show` is sent, the daemon opens the overlay window. When the overlay closes (click or Escape), the daemon keeps running. Thumbnails continue to be captured in the background.
@@ -86,25 +86,36 @@ make
 
 ```bash
 git clone https://github.com/GameLostException/hyprmctl.git ~/Lab/hyprmctl
-cd ~/Lab/hyprmctl/hyprshot
-make          # build hyprshot once
+cd ~/Lab/hyprmctl
+make build    # builds the hyprshot capture helper (required once)
 ```
 
-No further installation needed — run from the repo directly.
+`make build` compiles `hyprshot/hyprshot` — the C binary that captures window framebuffers. This is the only build step. The Python code runs directly from the repo.
+
+No system-wide installation is needed. All paths in `hyprland.conf` point directly into the repo.
+
+Available make targets:
+```bash
+make build     # build hyprshot (required once, and after hyprshot.c changes)
+make run       # start daemon in foreground (for testing)
+make test      # run test suite (no Wayland needed)
+make bounce    # kill running daemon and restart fresh
+make lint      # ruff linter
+```
 
 ---
 
 ## Hyprland configuration
 
-Add to `~/.config/hypr/hyprland.conf`:
+Add to `~/.config/hypr/hyprland.conf`. Replace `REPO_PATH` with wherever you cloned the repo (e.g. `~/Lab/hyprmctl` or `/home/yourname/hyprmctl`):
 
 ```ini
 # Start the persistent daemon at login (warms thumbnail cache)
-exec-once = python3 /home/YOUR_USER/Lab/hyprmctl/hyprmctl.py
+exec-once = python3 REPO_PATH/hyprmctl.py
 
 # SUPER+SPACE opens the overlay
 $mod = SUPER
-bind = $mod, SPACE, exec, python3 /home/YOUR_USER/Lab/hyprmctl/hyprmctl.py --show
+bind = $mod, SPACE, exec, python3 REPO_PATH/hyprmctl.py --show
 ```
 
 > **Why `exec-once` for the daemon and `exec` for the bind?**  
@@ -114,10 +125,10 @@ bind = $mod, SPACE, exec, python3 /home/YOUR_USER/Lab/hyprmctl/hyprmctl.py --sho
 
 ```ini
 # Open (never close if already open):
-bind = $mod, SPACE, exec, python3 hyprmctl.py --show
+bind = $mod, SPACE, exec, python3 REPO_PATH/hyprmctl.py --show
 
 # Toggle (open if closed, close if open):
-bind = $mod, SPACE, exec, python3 hyprmctl.py --toggle
+bind = $mod, SPACE, exec, python3 REPO_PATH/hyprmctl.py --toggle
 ```
 
 ---
@@ -195,7 +206,7 @@ The daemon listens on `/tmp/hyprmctl-{uid}.sock`. `--show`, `--toggle`, `--hide`
 ## Running tests
 
 ```bash
-cd ~/Lab/hyprmctl
+cd REPO_PATH
 GDK_BACKEND=offscreen python3 -m pytest tests/ -v
 ```
 
@@ -219,18 +230,18 @@ ps aux | grep hyprmctl
 ```
 If not running, start it manually:
 ```bash
-python3 ~/Lab/hyprmctl/hyprmctl.py
+python3 REPO_PATH/hyprmctl.py
 ```
 Then try `--show` again.
 
 **Tiles show colour cards, no screenshots**  
 `hyprshot` may not be built:
 ```bash
-ls ~/Lab/hyprmctl/hyprshot/hyprshot
+ls REPO_PATH/hyprshot/hyprshot
 # if missing:
-cd ~/Lab/hyprmctl/hyprshot && make
+cd REPO_PATH/hyprshot && make
 ```
-Then restart the daemon (`bounce.sh` or kill + restart).
+Then restart the daemon (`bash REPO_PATH/bounce.sh` or kill + restart).
 
 **App icon missing (shows initials)**  
 The app's `.desktop` file was not found in `/usr/share/applications/`. This is normal for apps installed outside the standard path or with unusual class names. The initials fallback is intentional.
