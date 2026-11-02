@@ -11,6 +11,7 @@ Two render modes:
 from __future__ import annotations
 
 import math
+
 import gi
 
 gi.require_version("Gdk", "4.0")
