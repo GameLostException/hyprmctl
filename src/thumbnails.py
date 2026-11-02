@@ -39,6 +39,8 @@ _THUMB_MAX_W  = 800    # downscale max width
 _THUMB_MAX_H  = 500    # downscale max height
 _ROLL_INTERVAL = 2.0   # seconds between individual window captures (relaxed)
 _LOOP_SLEEP    = 0.05  # main loop sleep to prevent CPU spin
+_HYPRCTL_TIMEOUT = 1.5 # hyprctl IPC timeout (seconds) — never block longer than this
+_HYPRCTL_BACKOFF_MAX = 30.0  # max backoff when hyprctl is unresponsive (seconds)
 _HYPRSHOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "hyprshot", "hyprshot")
 
 
@@ -129,28 +131,37 @@ class ThumbnailCache:
         if pb is not None:
             self._store(addr, pb)
 
-    def _all_clients(self) -> list[dict]:
-        """All visible non-hidden clients, active workspace first."""
+    def _all_clients(self) -> list[dict] | None:
+        """
+        All visible non-hidden clients, active workspace first.
+        Returns None on IPC failure (caller should back off) vs [] for genuinely
+        empty workspace (caller can proceed normally).
+        """
         try:
             r = subprocess.run(
                 ["hyprctl", "clients", "-j"],
-                capture_output=True, text=True, timeout=2.0,
+                capture_output=True, text=True, timeout=_HYPRCTL_TIMEOUT,
             )
+            if r.returncode != 0:
+                return None
             all_clients = [
                 c for c in json.loads(r.stdout)
                 if not c.get("hidden") and c.get("size", [0, 0])[0] > 0
             ]
             r2 = subprocess.run(
                 ["hyprctl", "activeworkspace", "-j"],
-                capture_output=True, text=True, timeout=2.0,
+                capture_output=True, text=True, timeout=_HYPRCTL_TIMEOUT,
             )
             active_ws = json.loads(r2.stdout).get("id", -1)
             all_clients.sort(
                 key=lambda c: 0 if c.get("workspace", {}).get("id") == active_ws else 1
             )
             return all_clients
+        except subprocess.TimeoutExpired:
+            # hyprctl IPC is hung — return None so caller backs off
+            return None
         except Exception:
-            return []
+            return None
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -193,6 +204,12 @@ class ThumbnailCache:
 
         sock = connect()
 
+        # Backoff state for hyprctl IPC failures.
+        # When hyprctl clients -j hangs (known Hyprland issue), we exponentially
+        # back off rather than spinning at 100% CPU retrying every 2s.
+        _hyprctl_backoff = 1.0   # current backoff interval (seconds)
+        _hyprctl_next_try = 0.0  # monotonic timestamp of next allowed attempt
+
         while not self._stop.is_set():
             # ── Event handling ────────────────────────────────────────────────
             if sock is not None:
@@ -217,14 +234,26 @@ class ThumbnailCache:
             now = time.monotonic()
             if now - last_tick >= _ROLL_INTERVAL:
                 last_tick = now
-                if idx >= len(clients):
-                    clients = self._all_clients()
-                    idx = 0
-                if clients:
-                    # Run inline — hyprshot is fast (~0.1s) and we throttle
-                    # via _ROLL_INTERVAL so no need for a thread per capture.
-                    self._capture_client(clients[idx])
-                    idx += 1
+                if now >= _hyprctl_next_try:
+                    if idx >= len(clients):
+                        result = self._all_clients()
+                        if result is None:
+                            # hyprctl failed — back off exponentially, don't spin
+                            _hyprctl_next_try = now + _hyprctl_backoff
+                            _hyprctl_backoff  = min(_hyprctl_backoff * 2,
+                                                    _HYPRCTL_BACKOFF_MAX)
+                            clients = []
+                            idx = 0
+                        else:
+                            # Success — reset backoff
+                            _hyprctl_backoff = 1.0
+                            clients = result
+                            idx = 0
+                    if clients:
+                        # Run inline — hyprshot is fast (~0.1s) and we throttle
+                        # via _ROLL_INTERVAL so no need for a thread per capture.
+                        self._capture_client(clients[idx])
+                        idx += 1
 
             # Prevent CPU spin — the socket recv has a 1s timeout but events
             # can arrive continuously; this sleep keeps the loop at ~20Hz.
