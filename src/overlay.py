@@ -28,7 +28,7 @@ gi.require_version("Gtk4LayerShell", "1.0")
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
 from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
 
-from src.hypr import get_active_monitor, get_active_workspace_clients  # noqa: E402
+from src.hypr import get_active_monitor, get_active_workspace_clients, logical_size  # noqa: E402
 from src.icons import resolve_icon_name  # noqa: E402
 from src.layout import compute_layout  # noqa: E402
 from src.thumbnails import get_cache  # noqa: E402
@@ -260,6 +260,23 @@ _BASE_CSS = """
 }
 """
 
+_base_css_installed = False
+
+
+def install_base_css() -> None:
+    """Add the overlay style sheet to the display once per process (idempotent)."""
+    global _base_css_installed
+    display = Gdk.Display.get_default()
+    if _base_css_installed or display is None:
+        return
+    provider = Gtk.CssProvider()
+    provider.load_from_data(_BASE_CSS.encode())
+    Gtk.StyleContext.add_provider_for_display(
+        display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+    )
+    _base_css_installed = True
+
+
 # ── Spring physics ────────────────────────────────────────────────────────────
 
 def _spring_tick(
@@ -478,13 +495,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         bg_click.connect("pressed", self._on_bg_click)
         self._root.add_controller(bg_click)
 
-        provider = Gtk.CssProvider()
-        provider.load_from_data(_BASE_CSS.encode())
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(),
-            provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-        )
+        install_base_css()
 
         self._built = False  # guard against multiple map events
         self.connect("map", self._on_mapped)
@@ -584,11 +595,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                     LayerShell.set_monitor(self, m)
                     break
 
-        mon_w = monitor.get("width", 1920)
-        mon_h = monitor.get("height", 1080)
-        scale = monitor.get("scale", 1.0)
-        log_w = int(mon_w / scale)
-        log_h = int(mon_h / scale)
+        log_w, log_h = logical_size(monitor)
 
         # Background: blurred desktop screenshot (wallpaper shows through)
         self._build_background(monitor, log_w, log_h)
@@ -615,7 +622,7 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
         for tile_geo in tiles:
             addr   = tile_geo.client.get("address", "")
             pixbuf = thumbnails.get(addr)
-            cls    = tile_geo.client.get("class") or tile_geo.client.get("initialClass") or "unknown"
+            cls    = tile_geo.group
             widget = TileWidget(
                 tile_geo.client,
                 on_click=self._on_tile_click,
@@ -669,9 +676,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             else:
                 widget._center_widget = None
 
-            cls2 = tile_geo.client.get("class") or "unknown"
-            tile_widgets[cls2].append(widget)
-            by_class[cls2].append(tile_geo)
+            tile_widgets[cls].append(widget)
+            by_class[cls].append(tile_geo)
 
         # Build one Stack per app class
         for cls, geo_list in by_class.items():
@@ -806,7 +812,28 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
                 self._active_stack._collapse_id = 0
             self._animate_stack(self._active_stack, explode=False)
         self._active_stack = stack
+        self._raise_stack(stack)
         self._animate_stack(stack, explode=True)
+
+    # ── Z-order ───────────────────────────────────────────────────────────────
+    #
+    # Gtk.Fixed paints children in sibling order. Contract:
+    #   1. every icon+label box is above every tile;
+    #   2. the exploded stack's tiles are above all other stacks' tiles;
+    #   3. the hovered tile of the exploded stack is above its siblings.
+    # Each tile moves with its shadow (just below) and centre widget (just above).
+
+    def _raise_tiles(self, widgets: list[TileWidget]) -> None:
+        """Move tiles (with shadow and centre widget) to the top, then re-raise all icon boxes."""
+        for w in widgets:
+            for part in (getattr(w, "_shadow", None), w, getattr(w, "_center_widget", None)):
+                if part is not None:
+                    part.insert_before(self._fixed, None)
+        for s in self._stacks:
+            s.icon_label_box.insert_before(self._fixed, None)
+
+    def _raise_stack(self, stack: Stack) -> None:
+        self._raise_tiles(stack.widgets)
 
     def _on_stack_leave(self, stack: Stack) -> None:
         """Called when mouse leaves any widget belonging to `stack`."""
@@ -838,6 +865,8 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             self._set_tile_shadow_color(self._hovered_tile, blue=False)
         self._hovered_tile = widget
         self._set_tile_shadow_color(widget, blue=True)
+        if self._active_stack is not None and widget in self._active_stack.widgets:
+            self._raise_tiles([widget])
 
     def _on_tile_leave(self, widget: TileWidget) -> None:
         """Mouse left an individual tile."""
@@ -991,19 +1020,27 @@ class MissionControlOverlay(Gtk.ApplicationWindow):
             (t._client for t in self._tiles if t._client.get("address") == address),
             None,
         )
-        batch = ""
+        # Hyprland v0.57+: hyprctl dispatch routes through lua and cannot parse
+        # "focuswindow address:0x..." because the colon+address syntax is invalid lua.
+        # Use hyprctl eval with hl.dsp.focus({window=...}) instead.
+        # movecursor also needs the eval path: use hl.cursor.move({x=cx, y=cy}).
+        lua_parts = []
         if client:
             at = client.get("at", [0, 0])
             sz = client.get("size", [100, 100])
             cx = at[0] + sz[0] // 2
             cy = at[1] + sz[1] // 2
-            batch = f"dispatch movecursor {cx} {cy} ; "
-        batch += f"dispatch focuswindow address:{address}"
+            lua_parts.append(f"hl.dispatch(hl.dsp.cursor.move({{x={cx}, y={cy}}}))")
+        lua_parts.append(
+            f"local w = hl.get_window('address:{address}'); "
+            f"if w then hl.dispatch(hl.dsp.focus({{window=w}})) end"
+        )
+        lua_code = "; ".join(lua_parts)
         # Close overlay first so Hyprland receives focus immediately,
         # then fire hyprctl non-blocking so there's no subprocess wait.
         self.cancel_all_animations()
         self.close()
-        subprocess.Popen(["hyprctl", "--batch", batch],
+        subprocess.Popen(["hyprctl", "eval", lua_code],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _on_bg_click(self, gesture, n_press, x, y) -> None:
