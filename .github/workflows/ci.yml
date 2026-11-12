@@ -34,22 +34,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install system dependencies (GTK4 + layer-shell GIR)
+      # Install GObject/GTK4 bindings into the system Python.
+      # These packages are only available via apt — pip has no equivalent.
+      # We do NOT use actions/setup-python here because its virtualenv Python
+      # cannot see system site-packages where python3-gi is installed.
+      - name: Install system dependencies (GTK4 + GI bindings)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             python3-gi \
             python3-gi-cairo \
+            python3-pytest \
+            python3-pytest-cov \
             gir1.2-gtk-4.0 \
             libgtk-4-dev \
             gir1.2-gdkpixbuf-2.0
 
-      - name: Install Python dev dependencies
-        run: pip install -r requirements-dev.txt
+      - name: Install Python dev dependencies (into system Python)
+        run: python3 -m pip install --break-system-packages -r requirements-dev.txt
 
       - name: Run tests with coverage
         env:
@@ -68,7 +70,3 @@ jobs:
           name: coverage-${{ matrix.python-version }}
           path: coverage.xml
           retention-days: 7
-
-      - name: Coverage summary
-        run: |
-          python3 -m pytest tests/ --cov=src --cov-report=term-missing --no-header -q 2>/dev/null | tail -5
